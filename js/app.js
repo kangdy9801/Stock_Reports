@@ -128,6 +128,9 @@
         if (!rep.is && !rep.bs) throw new Error('재무제표를 찾지 못했습니다. DART에서 내려받은 정기보고서 PDF인지 확인하세요.');
         if (rep.meta.type && rep.meta.type !== cfg.accept) throw new Error(`${rep.meta.type}입니다. ${cfg.wrong}`);
         if (!rep.meta.type) throw new Error(`보고서 종류를 알 수 없습니다. ${cfg.wrong}`);
+        const cname = (x) => (x || '').replace(/\s|\(주\)|㈜|주식회사/g, '');
+        const other = st.reports.find(r => r.meta.company && rep.meta.company && cname(r.meta.company) !== cname(rep.meta.company));
+        if (other) throw new Error(`${rep.meta.company} 보고서입니다. 이 탭에는 ${other.meta.company} 보고서가 들어 있어요. 같은 회사끼리만 비교할 수 있으니, 다른 회사를 보려면 들어 있는 보고서를 빼고 넣어 주세요.`);
         if (!rep.meta.end || !rep.meta.label) throw new Error('보고서 기간(몇 년 몇 분기인지)을 읽지 못했습니다. 표지에 \'○○년 ○월 ○일 까지\' 같은 기간 표시가 있는 DART 원본 PDF인지 확인하세요.');
         if (st.reports.some(r => r.meta.label && r.meta.label === rep.meta.label && (r.meta.company || '') === (rep.meta.company || ''))) throw new Error(`${rep.meta.label} 보고서가 이미 들어 있습니다.`);
         rep.id = job.id; rep.fileName = job.fileName;
@@ -229,7 +232,9 @@
 
   const VAL_FIELDS = [
     { key: 'price', label: '주가', unit: '원' },
-    { key: 'shares', label: '발행주식수', unit: '주' },
+    { key: 'shares', label: '발행주식수(보통주)', unit: '주' },
+    { key: 'pref_shares', label: '우선주 수', unit: '주', onlyIf: 'pref' },
+    { key: 'pref_price', label: '우선주 주가', unit: '원', onlyIf: 'pref' },
     { key: 'equity_ctrl', label: '지배주주 자본', unit: '억원' },
     { key: 'ttm_rev', label: '12개월 매출', unit: '억원' },
     { key: 'ttm_op', label: '12개월 영업이익', unit: '억원' },
@@ -373,16 +378,20 @@
     ocf: '영업활동현금흐름(누적)', ocf_ni: '영업현금흐름 ÷ 순이익(누적)', capex: '설비투자(누적)', fcf: 'FCF(누적)',
     div_paid: '배당금 지급(누적)', int_paid: '이자 지급액(누적)', icr: '이자보상배율(누적 영업이익 ÷ 이자 지급)',
     ebitda: 'EBITDA(누적)', ebitda_m: 'EBITDA 마진(누적)', backlog_x: '수주잔고 ÷ 누적 매출',
-    rev: '매출액(분기 3개월)', gp: '매출총이익(분기)', sga: '판매비와관리비(분기)', op: '영업이익(분기)', ni_ctrl: '지배주주 순이익(분기)',
+    rev: '매출액(분기 3개월)', gp: '매출총이익(분기)', sga: '판매비와관리비(분기)', op: '영업이익(분기)', ni: '당기순이익(분기)', npm: '순이익률(분기)', ni_ctrl: '지배주주 순이익(분기)',
     rev_yoy: '매출 성장률(전년 같은 분기 대비)'
   };
   function bizTableRows(step, R, ci) {
     const n = R.cols.length;
     const cum = mode === 'quarter' ? '(누적)' : '';
     let list = [];
-    if (step === 1) list = A.bizRows(R.cols, 'products').filter(r => r.vals.some(v => v !== undefined && Math.abs(v) >= 0.5))
-      .sort((a, b) => (b.vals[n - 1] ?? -1e9) - (a.vals[n - 1] ?? -1e9)).slice(0, 6)
-      .map(r => ({ label: `${r.name} 매출${cum}`, vals: r.vals, better: 'up' }));
+    if (step === 1) {
+      let src = A.bizRows(R.cols, 'products'), suffix = '매출';
+      if (!src.some(r => r.vals.some(v => v !== undefined))) { src = A.bizRows(R.cols, 'segments', 'rev'); suffix = '부문 매출'; }
+      list = src.filter(r => r.vals.some(v => v !== undefined && Math.abs(v) >= 0.5))
+        .sort((a, b) => (b.vals[n - 1] ?? -1e9) - (a.vals[n - 1] ?? -1e9)).slice(0, 6)
+        .map(r => ({ label: `${r.name} ${/부문$/.test(r.name) && suffix === '부문 매출' ? '매출' : suffix}${cum}`, vals: r.vals, better: 'up' }));
+    }
     if (step === 8) list = A.bizRows(R.cols, 'segments', 'op').filter(r => r.vals.some(v => v !== undefined && Math.abs(v) >= 1))
       .map(r => ({ label: `${r.name} 영업이익${cum}`, vals: r.vals, better: 'up' }));
     return list.map(r => {
@@ -474,6 +483,7 @@
     );
     const grid = h('div', { class: 'val-grid' });
     for (const f of VAL_FIELDS) {
+      if (f.onlyIf === 'pref' && !(R.vDef.pref_shares > 0) && !(state.valuation.pref_shares > 0)) continue;
       const def = R.vDef[f.key];
       const user = state.valuation[f.key];
       const id = 'val-' + f.key;
@@ -493,7 +503,7 @@
       grid.append(h('div', { class: 'field' },
         h('label', { for: id, text: `${f.label} (${f.unit})` }),
         inp,
-        h('small', { text: f.key === 'price' ? (state.valuation.price !== undefined ? '직접 입력한 값' : '주식 앱이나 증권사에서 확인한 주가를 넣으세요') : (def === null || def === undefined) ? '자동으로 찾지 못했습니다. 직접 입력하세요.' : (state.valuation[f.key] !== undefined ? '직접 입력한 값' : '비워두면 자동값: ' + noteText) })
+        h('small', { text: f.key === 'price' ? (state.valuation.price !== undefined ? '직접 입력한 값' : '주식 앱이나 증권사에서 확인한 보통주 주가를 넣으세요') : f.key === 'pref_price' ? (state.valuation.pref_price !== undefined ? '직접 입력한 값' : R.vDef.notes.pref_price) : (def === null || def === undefined) ? '자동으로 찾지 못했습니다. 직접 입력하세요.' : (state.valuation[f.key] !== undefined ? '직접 입력한 값' : '비워두면 자동값: ' + noteText) })
       ));
     }
     const reset = h('button', { type: 'button', class: 'btn ghost small', text: '주가 외 칸을 자동값으로', onclick: () => { const keep = {}; ['ticker', 'price', 'date'].forEach(k => { if (state.valuation[k] !== undefined) keep[k] = state.valuation[k]; }); state.valuation = keep; markDirty(); render(); const st9 = $('#step-9'); if (st9) st9.scrollIntoView(); } });
@@ -517,12 +527,13 @@
       h('span', { class: 'vnum', text: v === undefined ? '—' : (unit === '억원' ? fmt(v) : v.toFixed(1)) }, h('small', { text: v === undefined ? '' : unit })),
       h('span', { class: 'vhelp', text: help })
     );
-    const loss = o.ttm_ni_ctrl !== undefined && !(o.ttm_ni_ctrl > 0);
+    const missing = o.mcap && (o.ttm_ni_ctrl === null || o.ttm_ni_ctrl === undefined);
+    const loss = !missing && o.ttm_ni_ctrl !== undefined && !(o.ttm_ni_ctrl > 0);
     const card2 = (label, v, unit, help, digits) => { const c = card(label, v, unit, help); if (digits && v !== undefined) c.querySelector('.vnum').firstChild.textContent = v.toFixed(digits); return c; };
     box.replaceChildren(
-      card('시가총액', o.mcap, '억원', '주가 × 발행주식수'),
-      card('PER', o.per, '배', loss ? '순이익이 적자라 계산 안 됨' : '시가총액 ÷ 12개월 지배주주 순이익. 몇 년치 이익에 사는지'),
-      withBadge(card2('PEG', o.peg, '', loss ? 'PER이 없어 계산 안 됨' : !(o.growth > 0) ? '성장률이 0 이하라 계산 안 됨' : 'PER ÷ 이익 성장률(%). 1보다 낮으면 저평가', 2), o.peg !== undefined && o.peg < 1 ? '저평가' : null),
+      card('시가총액', o.mcap, '억원', state.valuation.pref_shares > 0 || (last && last.vDef.pref_shares > 0) ? '보통주 + 우선주 시가총액' : '주가 × 발행주식수'),
+      card('PER', o.per, '배', missing ? '12개월 지배주주 순이익이 없어 계산 안 됨' : loss ? '순이익이 적자라 계산 안 됨' : '시가총액 ÷ 12개월 지배주주 순이익. 몇 년치 이익에 사는지'),
+      withBadge(card2('PEG', o.peg, '', (loss || missing) ? 'PER이 없어 계산 안 됨' : !(o.growth > 0) ? '성장률이 0 이하라 계산 안 됨' : 'PER ÷ 이익 성장률(%). 1보다 낮으면 저평가', 2), o.peg !== undefined && o.peg < 1 ? '저평가' : null),
       withBadge(card('ROE', o.roe, '%', '12개월 지배주주 순이익 ÷ 지배주주 자본. 15% 이상이면 좋음'), o.roe !== undefined && o.roe >= 15 ? '좋음' : null),
       card('PBR', o.pbr, '배', '시가총액 ÷ 지배주주 자본. 1배면 장부가치와 같은 가격'),
       card('PSR', o.psr, '배', '시가총액 ÷ 12개월 매출. 적자 기업 비교에 유용'),

@@ -62,6 +62,8 @@
     { key: 'sga', step: 2, label: '판매비와관리비', unit: '억원', better: 'flat' },
     { key: 'op', step: 2, label: '영업이익', unit: '억원', better: 'up' },
     { key: 'opm', step: 2, label: '영업이익률', unit: '%', better: 'up' },
+    { key: 'ni', step: 2, label: '당기순이익', unit: '억원', better: 'up' },
+    { key: 'npm', step: 2, label: '순이익률', unit: '%', better: 'up' },
     { key: 'ebitda', step: 2, label: 'EBITDA(영업이익 + 감가상각비)', unit: '억원', better: 'up' },
     { key: 'ebitda_m', step: 2, label: 'EBITDA 마진', unit: '%', better: 'up' },
     { key: 'ni_ctrl', step: 2, label: '지배주주 순이익', unit: '억원', better: 'up' },
@@ -247,7 +249,7 @@
     const set = (k, v) => { if (v !== null && v !== undefined && Number.isFinite(v)) d[k] = v; };
     for (const b of BASE) set(b.key, g(b.key));
     const rev = g('rev');
-    if (rev) { set('gpm', g('gp') !== null ? g('gp') / rev * 100 : null); set('opm', g('op') !== null ? g('op') / rev * 100 : null); }
+    if (rev) { set('gpm', g('gp') !== null ? g('gp') / rev * 100 : null); set('opm', g('op') !== null ? g('op') / rev * 100 : null); set('npm', g('ni') !== null ? g('ni') / rev * 100 : null); }
     const ocf = g('ocf'), capex = g('capex');
     if (ocf !== null) set('fcf', ocf - (capex || 0));
     const ni = g('ni_cum') !== null ? g('ni_cum') : g('ni');
@@ -348,7 +350,8 @@
     // 1 사업 이해: 제품별 매출과 연구개발
     {
       const n = cols.length, ci = compareIndex(cols);
-      const prods = bizRows(cols, 'products').filter(r => r.vals[n - 1] !== undefined);
+      let prods = bizRows(cols, 'products').filter(r => r.vals[n - 1] !== undefined);
+      if (!prods.length) prods = bizRows(cols, 'segments', 'rev').filter(r => r.vals[n - 1] !== undefined && Math.abs(r.vals[n - 1]) >= 1);
       const ph = [];
       let lead = null, lag = null;
       if (ci >= 0) for (const r of prods) {
@@ -409,7 +412,10 @@
     if (L.debt_ratio !== undefined && L.debt_ratio > 200) v(6, '위험', `부채비율이 ${L.debt_ratio.toFixed(0)}%로 높습니다.`);
     else if (L.debt_total !== undefined && P.debt_total !== undefined && L.debt_total < P.debt_total * 0.95) v(6, '개선', `이자 붙는 빚이 ${fmtNum(P.debt_total)}억에서 ${fmtNum(L.debt_total)}억으로 줄었습니다.`);
     else if (L.debt_ratio !== undefined && L.debt_ratio > 100) v(6, '주의', `부채비율이 ${L.debt_ratio.toFixed(0)}%입니다.`);
-    else if (L.debt_total !== undefined && P.debt_total !== undefined && L.debt_total > P.debt_total * 1.2) v(6, '주의', '이자 붙는 빚이 20% 넘게 늘었습니다.');
+    else if (L.debt_total !== undefined && P.debt_total !== undefined && L.debt_total > P.debt_total * 1.2) {
+      if (L.cash_total !== undefined && L.cash_total > L.debt_total * 2) v(6, '양호', `이자 붙는 빚이 ${fmtNum(P.debt_total)}억에서 ${fmtNum(L.debt_total)}억으로 늘었지만, 현금성 자산(${fmtNum(L.cash_total)}억)이 빚보다 훨씬 많습니다.`);
+      else v(6, '주의', '이자 붙는 빚이 20% 넘게 늘었습니다.');
+    }
     else v(6, '양호', '빚의 규모가 크지 않거나 비슷하게 유지됩니다.');
     // 7
     if ((L.op_cum ?? L.op) !== undefined && (L.op_cum ?? L.op) <= 0 && (L.debt_total || 0) > 0) v(7, (L.cash_cover !== undefined && L.cash_cover < 1) ? '위험' : '주의', '영업적자라 이자를 영업이익으로 갚지 못하는 상태입니다.');
@@ -458,11 +464,12 @@
     }
     // 9
     if (!val9 || !val9.mcap) v(9, '입력 필요', '주가와 발행주식수를 입력하면 계산됩니다.');
+    else if (val9.ttm_ni_ctrl === null || val9.ttm_ni_ctrl === undefined || Number.isNaN(val9.ttm_ni_ctrl)) v(9, '확인 필요', '12개월 지배주주 순이익을 찾지 못해 PER·PEG를 계산하지 못했습니다. 9단계의 \'12개월 지배주주 순이익\' 칸에 직접 넣어 주세요.');
     else if (!(val9.ttm_ni_ctrl > 0)) v(9, '부담', '최근 12개월 순이익이 적자라 PER·PEG로 평가할 수 없습니다. PBR, PSR, EV/EBITDA로 흑자 전환 기대가 얼마나 반영돼 있는지 보세요.');
     else {
       const per = val9.per, peg = val9.peg;
       const pegTxt = peg !== undefined ? `, PEG ${peg.toFixed(2)}` : '';
-      if (peg !== undefined && peg < 1) v(9, '저평가', `PEG ${peg.toFixed(2)}로 1보다 낮아 성장률(${val9.growth.toFixed(0)}%)에 비해 저평가입니다(PER ${per.toFixed(1)}배). 그 성장률이 앞으로도 이어질지 확인하세요.`);
+      if (peg !== undefined && peg < 1) v(9, '저평가', `PEG ${peg.toFixed(2)}로 1보다 낮아 성장률(${val9.growth.toFixed(0)}%)에 비해 저평가입니다(PER ${per.toFixed(1)}배). 그 성장률이 앞으로도 이어질지 확인하세요.` + (val9.growth > 100 ? ' 다만 성장률이 100%를 넘는 건 이익이 낮은 바닥에서 회복된 영향이라 PEG가 지나치게 낮게 나옵니다. 앞으로 기대하는 성장률로 바꿔 넣어 보세요.' : ''));
       else if (per > 40 || (peg !== undefined && peg > 2)) v(9, '부담', `PER ${per.toFixed(1)}배${pegTxt}로 높은 성장 기대가 반영돼 있습니다.`);
       else if (per > 20) v(9, '보통', `PER ${per.toFixed(1)}배${pegTxt}입니다. 성장률과 비교해 판단하세요.`);
       else v(9, '낮은 편', `PER ${per.toFixed(1)}배${pegTxt}로 이익에 비해 낮은 편입니다. 이익이 일회성은 아닌지 확인하세요.`);
@@ -603,13 +610,30 @@
   }
 
   // ---------- 주가 ----------
+  // PEG용 이익 성장률: 지배주주 순이익의 전년 대비 증가율
+  function setGrowth(out, prev, cur, label) {
+    if (!(prev > 0) || cur === undefined || cur === null) {
+      out.growth = null;
+      out.notes.growth = prev !== undefined && !(prev > 0) ? '전년 지배주주 순이익이 0 이하라 증가율을 계산할 수 없습니다. 기대 성장률을 직접 넣으세요.' : '전년 숫자를 찾지 못해 계산하지 못했습니다. 기대 성장률을 직접 넣으세요.';
+      return;
+    }
+    const g = (cur / prev - 1) * 100;
+    out.growth = g;
+    out.notes.growth = `${label} ${g >= 0 ? '+' : ''}${g.toFixed(1)}%.` + (g <= 0 ? ' 0 이하라 PEG는 계산되지 않습니다.' : '') + ' 한 해 숫자는 출렁일 수 있으니 기대 성장률로 바꿔 넣어도 됩니다.';
+  }
+
   function valuationDefaults(cols, D, mode) {
     const lc = cols[cols.length - 1];
     const rep = lc.rep;
     const L = D[D.length - 1] || {};
     const out = { notes: {} };
     out.shares = L.shares || (L.capital ? Math.round(L.capital * 1e8 / 500) : null);
-    out.notes.shares = L.shares ? '보고서의 발행주식의 총수' : '자본금 ÷ 액면가 500원으로 추정. 실제 액면가를 확인하세요.';
+    const pref = rep.shares && rep.shares.pref;
+    out.notes.shares = L.shares ? (pref ? '보고서의 발행주식 중 보통주. 우선주는 아래 칸에 따로 넣습니다' : '보고서의 발행주식의 총수') : '자본금 ÷ 액면가 500원으로 추정. 실제 액면가를 확인하세요.';
+    out.pref_shares = pref || 0;
+    out.notes.pref_shares = '보고서의 발행주식 중 우선주. 시가총액에 우선주 몫도 더해야 PER·PBR이 주당순이익(EPS) 기준과 맞습니다';
+    out.pref_price = null;
+    out.notes.pref_price = '비워두면 보통주 주가로 계산합니다(우선주는 보통 더 싸므로 실제 우선주 주가를 넣으면 정확해집니다)';
     out.equity_ctrl = L.equity_ctrl !== undefined ? L.equity_ctrl : L.equity;
     out.notes.equity_ctrl = '최근 보고서의 지배주주 자본';
     out.nci = (L.equity !== undefined && L.equity_ctrl !== undefined) ? Math.max(0, L.equity - L.equity_ctrl) : 0;
@@ -622,13 +646,9 @@
       out.notes.ttm = `${lc.label} 연간 숫자`;
       out.notes.ttm_ebitda = '영업이익 + 감가상각비·무형자산상각비 (주석의 비용의 성격별 분류 등)';
       out.notes.ttm_fcf = '연간 FCF';
-      const cands = [];
-      if (L.ni_cagr !== undefined) cands.push([L.ni_cagr, `지배주주 순이익의 ${cols[0].label}~${lc.label} 연평균 성장률`]);
-      if (D.length > 1 && D[D.length - 2].ni_ctrl > 0 && L.ni_ctrl > 0) cands.push([(L.ni_ctrl / D[D.length - 2].ni_ctrl - 1) * 100, '지배주주 순이익 전년 대비 증가율']);
-      cands.sort((a, b) => a[0] - b[0]);
-      let g = cands.length ? cands[0][0] : null;
-      let gNote = cands.length ? cands[0][1] + (cands.length > 1 ? '(연평균과 전년 대비 중 보수적으로 낮은 값)' : '') : '';
-      out.growth = g; out.notes.growth = g === null ? '이익이 적자이거나 비교할 해가 없어 계산하지 못했습니다. 기대 성장률을 직접 넣으세요.' : gNote + '. 과거 성장률이므로 앞으로의 기대 성장률로 바꿔 넣어도 됩니다.';
+      // PEG용 성장률 = 지배주주 순이익의 전년 대비 증가율
+      const pv = D.length > 1 && cols[cols.length - 2].end && lc.end && lc.end.y - cols[cols.length - 2].end.y === 1 ? D[D.length - 2].ni_ctrl : undefined;
+      setGrowth(out, pv, L.ni_ctrl, `지배주주 순이익 전년 대비 증가율(${cols[cols.length - 2] ? cols[cols.length - 2].label : '전년'} → ${lc.label})`);
       return out;
     }
     const sum = rep.summary;
@@ -647,19 +667,17 @@
     out.ttm_fcf = L.fcf !== undefined ? L.fcf * factor : null;
     out.notes.ttm_fcf = `누적 FCF × ${+factor.toFixed(2)} (단순 연환산 추정${m <= 3 ? '. 1분기 숫자를 4배 한 값이라 출렁임이 매우 큽니다' : ''}. 사업보고서의 연간 FCF로 바꿔 넣으면 정확해집니다)`;
     out.notes.ttm_ebitda = `12개월 영업이익 + 누적 상각비 × ${+factor.toFixed(2)} (상각비는 단순 연환산 추정)`;
-    const cands = [];
-    if (L.ni_cagr !== undefined) cands.push([L.ni_cagr, `지배주주 순이익의 ${cols[0].label}~${lc.label} 연평균 성장률`]);
-    if (curIS.ni_ctrl && prevIS.ni_ctrl && curIS.ni_ctrl.v > 0 && prevIS.ni_ctrl.v > 0) cands.push([(curIS.ni_ctrl.v / prevIS.ni_ctrl.v - 1) * 100, `${rep.meta.cumLabel === '누적' ? '연초 이후 누적' : '상반기'} 지배주주 순이익 전년 동기 대비 증가율`]);
-    if (out.ttm_ni_ctrl > 0 && sum && sum.ni_ctrl && sum.ni_ctrl.v > 0) cands.push([(out.ttm_ni_ctrl / sum.ni_ctrl.v - 1) * 100, '12개월 지배주주 순이익의 직전 사업연도 대비 증가율']);
-    cands.sort((a, b) => a[0] - b[0]);
-    let g = cands.length ? cands[0][0] : null;
-    let gNote = cands.length ? cands[0][1] + (cands.length > 1 ? '(여러 계산 중 보수적으로 낮은 값)' : '') : '';
-    out.growth = g; out.notes.growth = g === null ? '이익이 적자이거나 비교할 기간이 없어 계산하지 못했습니다. 기대 성장률을 직접 넣으세요.' : gNote + '. 한 해 숫자는 출렁일 수 있으니 기대 성장률로 바꿔 넣어도 됩니다.';
+    // PEG용 성장률 = 지배주주 순이익의 전년 대비(같은 기간) 증가율
+    setGrowth(out, prevIS.ni_ctrl ? prevIS.ni_ctrl.v : undefined, curIS.ni_ctrl ? curIS.ni_ctrl.v : undefined,
+      `${rep.meta.type === '반기보고서' ? '상반기' : '연초 이후 누적'} 지배주주 순이익 전년 대비 증가율(${rep.meta.end ? rep.meta.end.y - 1 : '전년'} → ${rep.meta.end ? rep.meta.end.y : '올해'}, 같은 기간끼리)`);
     return out;
   }
   function valuationCalc(inp) {
     const r = {};
-    if (inp.price > 0 && inp.shares > 0) r.mcap = inp.price * inp.shares / 1e8;
+    if (inp.price > 0 && inp.shares > 0) {
+      const prefPrice = inp.pref_price > 0 ? inp.pref_price : inp.price;
+      r.mcap = (inp.price * inp.shares + (inp.pref_shares > 0 ? inp.pref_shares * prefPrice : 0)) / 1e8;
+    }
     if (r.mcap) {
       const ev = r.mcap - (inp.net_cash || 0) + (inp.nci || 0);
       r.ev = ev;
@@ -714,9 +732,10 @@
   function sameName(a, b) {
     const x = a.replace(/\s/g, '').toLowerCase(), y = b.replace(/\s/g, '').toLowerCase();
     if (x === y) return true;
-    if (x.length !== y.length || x.length < 4) return false;
-    let diff = 0; for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) diff++;
-    return diff <= 1;
+    // 오타 한 글자만 허용. 앞 두 글자가 다르면(무선/유선, DX/DS) 다른 항목으로 봅니다.
+    if (x.length !== y.length || x.length < 6) return false;
+    let diff = 0, at = -1; for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) { diff++; at = i; }
+    return diff === 1 && at >= 2;
   }
   // 열별 제품·부문 숫자를 같은 이름끼리 모은 행
   function bizRows(cols, kind, field) {

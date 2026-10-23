@@ -12,7 +12,7 @@
   const norm = (s) => String(s || '').replace(/[\s·ㆍ\[\]［］*※]/g, '');
   const clean = (L) => L.replace(/\(주[\d,\s]*\)/g, '').replace(/\((손실|이익|손익)\)/g, '');
 
-  const NUM_RE = /^\(?-?\d[\d,]*(\.\d+)?\)?$/;
+  const NUM_RE = /^[△▲]?\(?-?\d[\d,]*(\.\d+)?\)?$/;
   function splitRow(line) {
     const toks = line.trim().split(/\s+/);
     const nums = [];
@@ -21,8 +21,8 @@
       const t = toks[i];
       if (t === '-' || t === '–' || t === '－') { nums.unshift(0); continue; }
       if (NUM_RE.test(t)) {
-        const neg = t.startsWith('(') || t.startsWith('-');
-        const v = parseFloat(t.replace(/[(),\-]/g, ''));
+        const neg = /^[(\-△▲]/.test(t);
+        const v = parseFloat(t.replace(/[(),\-△▲]/g, ''));
         if (Number.isNaN(v)) break;
         nums.unshift(neg ? -v : v);
         continue;
@@ -30,7 +30,9 @@
       break;
     }
     const label = toks.slice(0, i + 1).join(' ');
-    return { label, L: norm(label), nums };
+    // 쉼표 자리가 이상한 숫자(예: '417,09')는 보고서 오타일 수 있어 표시해 둡니다.
+    const bad = toks.slice(i + 1).some(t => /,/.test(t) && !/^[△▲(\-]?\d{1,3}(,\d{3})*(\.\d+)?\)?$/.test(t));
+    return { label, L: norm(label), nums, bad };
   }
 
   const UNIT = { '원': 1e-8, '천원': 1e-5, '백만원': 1e-2, '억원': 1 };
@@ -58,15 +60,48 @@
     /^(\d-\d\.)?(연결)?자본변동표$/, /^(\d-\d\.)?(연결)?현금흐름표$/,
     /^\d\.(연결)?재무제표주석$/, /^\d\.(연결)?재무제표$/, /재무제표에대한주석/
   ];
+  // 표 머리글로 쓰이는 줄(다음 줄과 합치지 않음)
+  const HEADER_ROW = /^(자산|부채|자본|부채와자본|자본과부채|유동자산|비유동자산|유동부채|비유동부채|수익|비용|조정항목|조정)$/;
+  const isNoteFrag = (t) => /^\(?주[\d,\s]*\)?$|^[\d,\s]+\)$/.test(t.replace(/\s/g, ''));
+  // 계정 이름이 좁은 칸에서 여러 줄로 나뉜 보고서(예: '현금및현금성자산' / 숫자 / '(주34,35)')를 한 줄로 합칩니다.
   function sectionRows(lines, start, maxLen = 260) {
     const rows = [];
-    for (let i = start + 1; i < Math.min(lines.length, start + maxLen); i++) {
+    const stop = Math.min(lines.length, start + maxLen);
+    const nextReal = (i) => { for (let j = i + 1; j < stop; j++) if (!isPageNoise(lines[j]) && lines[j].trim()) return j; return -1; };
+    for (let i = start + 1; i < stop; i++) {
       const raw = lines[i];
-      if (isPageNoise(raw)) continue;
+      if (isPageNoise(raw) || !raw.trim()) continue;
       const n = norm(raw);
       if (i > start + 3 && STMT_TITLES.some(r => r.test(n))) break;
       const r = splitRow(raw);
       r.raw = raw.trim();
+      const prev = rows[rows.length - 1];
+      if (!r.nums.length) {
+        const j = nextReal(i);
+        const nxt = j >= 0 ? splitRow(lines[j]) : null;
+        const nextIsBareNums = nxt && nxt.nums.length && !nxt.label.trim();
+        // 앞 줄이 여러 줄로 나뉜 계정의 숫자 줄이었고, 지금 줄이 그 이름의 뒷부분이면 이어 붙임
+        if (prev && prev.nums.length && prev.wrapped && !nextIsBareNums && (isNoteFrag(raw) || n.length <= 14) && !HEADER_ROW.test(clean(n))) {
+          prev.label += raw.trim(); prev.L = norm(prev.label); prev.raw += ' ' + raw.trim();
+          continue;
+        }
+        // 글자만 있는 짧은 조각이 이어지는 경우(예: '…의 귀' / '속')
+        if (prev && !prev.nums.length && n.length <= 3 && !nextIsBareNums) { prev.label += raw.trim(); prev.L = norm(prev.label); prev.raw += raw.trim(); continue; }
+        rows.push(r);
+        continue;
+      }
+      if (prev && !prev.nums.length && !prev.used) {
+        const pl = clean(prev.L);
+        const bare = !r.label.trim();
+        const colHead = /^(3개월|누적|당기|전기|전전기|당반기|전반기|당분기|전분기|반기|분기|1분기|3분기|제\d+기|과목|구분|금액|주석|\d{4}년)+$/.test(pl);
+        if ((bare && !colHead) || (!bare && !colHead && !HEADER_ROW.test(pl) && !/귀속|단위|현재|부터|까지|^제\d+기/.test(pl) && !isNoteFrag(prev.raw))) {
+          r.label = prev.label + (bare ? '' : ' ' + r.label);
+          r.L = norm(r.label);
+          r.raw = prev.raw + ' ' + r.raw;
+          r.wrapped = true;
+          if (!bare || !HEADER_ROW.test(pl)) rows.pop(); else prev.used = true;
+        }
+      }
       rows.push(r);
     }
     return rows;
@@ -102,7 +137,7 @@
     const rows = sectionRows(lines, at);
     const cur = {}, prev = {}, prev2 = {};
     let zone = null;
-    const fin = /(금융자산|금융상품|단기투자|유가증권|매도가능|상각후원가|만기보유)/;
+    const fin = /(금융자산|금융상품|단기투자|투자자산|유가증권|매도가능|상각후원가|만기보유)/;
     const debt = /(차입금|사채|유동성장기부채|리스부채)/;
     const debtNot = /(파생|조정|할인|할증|상환할증)/;
     const potential = [];
@@ -112,7 +147,7 @@
       else if (L === '비유동자산') zone = 'nca';
       else if (L === '유동부채') zone = 'cl';
       else if (L === '비유동부채') zone = 'ncl';
-      else if (L === '자본' || L === '자본총계' || L.startsWith('지배기업')) zone = zone === 'cl' || zone === 'ncl' ? 'eq' : zone;
+      else if (L === '자본' || L === '자본총계' || /^지배(기업|회사)/.test(L)) zone = zone === 'cl' || zone === 'ncl' ? 'eq' : zone;
       if (!r.nums.length) continue;
       const a = r.nums[0], b = r.nums.length > 1 ? r.nums[1] : null, c = r.nums.length > 2 ? r.nums[2] : null;
       const put = (k) => { rec(cur, k, a, r, unit); if (b !== null) rec(prev, k, b, r, unit); if (c !== null) rec(prev2, k, c, r, unit); };
@@ -123,14 +158,15 @@
       if (L.startsWith('부채총계')) { put('liab'); zone = 'eq'; continue; }
       if (L.startsWith('자본총계')) { put('equity'); continue; }
       if (L === '자본금' && !cur.capital) { put('capital'); continue; }
-      if (zone === 'eq' && L.includes('지배기업') && !cur.equity_ctrl) { put('equity_ctrl'); continue; }
+      if (zone === 'eq' && /지배(기업|회사)|지배주주/.test(L) && !L.includes('비지배') && !cur.equity_ctrl) { put('equity_ctrl'); continue; }
       if (zone === 'ca') {
         if (L.startsWith('현금및현금성자산') && !cur.cash) put('cash');
         else if (L.startsWith('매출채권') && !cur.receivables) put('receivables');
         else if (L.startsWith('재고자산') && !cur.inventory) put('inventory');
         else if (fin.test(L) && !/(파생|매출채권|법인세)/.test(L)) add('st_fin');
       } else if (zone === 'nca') {
-        if (fin.test(L) && !/(관계기업|종속|공동기업|파생|매출채권|법인세)/.test(L)) add('lt_fin');
+        // 비유동 금융자산 중 주식 투자(기타포괄손익-공정가치, 장기투자자산 등)는 현금처럼 쓸 돈이 아니라 뺍니다.
+        if (fin.test(L) && !/(관계기업|종속|공동기업|파생|매출채권|법인세|부동산|기타포괄|지분상품|투자주식|장기투자자산)/.test(L)) add('lt_fin');
       } else if (zone === 'cl' || zone === 'ncl') {
         if (L.includes('계약부채')) add('contract_liab');
         if (debt.test(L) && !debtNot.test(L)) {
@@ -158,7 +194,7 @@
     const REV = new Set(['매출액', '수익(매출액)', '수익', '영업수익', '매출', '매출수익', '영업수익(매출액)']);
     for (const r of rows) {
       if (!r.nums.length) {
-        if (r.L.includes('귀속')) attr = /포괄/.test(r.L) ? 'oci' : 'ni';
+        if (/귀속|의귀$/.test(r.L)) attr = /포괄/.test(r.L) ? 'oci' : 'ni';
         continue;
       }
       const L = clean(r.L);
@@ -184,7 +220,7 @@
       else if (L.startsWith('기타비용') || L.startsWith('기타영업외비용')) put('oth_exp');
       else if (/^법인세(비용)?차감전/.test(L)) put('pbt');
       else if (!cur.ni && /^(연결)?(총)?(당기|반기|분기)?(연결)?(총)?(순이익|순손실|당기순이익|당기순손실)/.test(L) && !L.includes('귀속') && !L.includes('주당')) { put('ni'); afterNi = true; }
-      else if (niAttr && !cur.ni_ctrl && L.includes('지배기업') && !L.includes('비지배')) put('ni_ctrl');
+      else if (niAttr && !cur.ni_ctrl && /지배(기업|회사)|지배주주/.test(L) && !L.includes('비지배')) put('ni_ctrl');
       else if (niAttr && !cur.nci && L.startsWith('비지배')) put('nci');
     }
     for (const s of [cur, prev, prev2, curQ, prevQ]) {
@@ -208,7 +244,7 @@
       if (L.startsWith('영업활동')) put('ocf');
       else if (L.startsWith('투자활동')) put('icf');
       else if (L.startsWith('재무활동')) put('fcf_fin');
-      else if (/^유형자산의?취득/.test(L)) addAbs('capex_ppe');
+      else if (/^유형자산(및[^의]{0,12})?의?취득/.test(L)) addAbs('capex_ppe');
       else if (/^무형자산의?취득/.test(L)) addAbs('capex_int');
       else if (/^배당금의?지급/.test(L)) addAbs('div_paid');
       else if (/^이자의?지급/.test(L)) addAbs('int_paid');
@@ -237,12 +273,13 @@
       const r = splitRow(raw); r.raw = raw.trim();
       if (r.nums.length < 2) continue;
       const L = clean(r.L);
-      const put = (k) => { if (!out[k]) out[k] = { v: r.nums[1] * unit, src: r.raw }; };
+      const put = (k) => { if (!out[k] && !r.bad) out[k] = { v: r.nums[1] * unit, src: r.raw }; else if (!out[k]) out[k] = { bad: true }; };
       if (['매출액', '수익(매출액)', '수익', '영업수익', '매출'].includes(L)) put('rev');
       else if (L.startsWith('영업이익') || L.startsWith('영업손실')) put('op');
       else if (/^(연결)?(총)?(당기|반기|분기)?(연결)?(총)?순(이익|손실)/.test(L) && !L.includes('주당')) { put('ni'); afterNi = true; }
-      else if (afterNi && L.includes('지배기업')) put('ni_ctrl');
+      else if (afterNi && /지배(기업|회사)|지배주주/.test(L) && !L.includes('비지배')) put('ni_ctrl');
     }
+    for (const k of Object.keys(out)) if (out[k].bad) delete out[k];
     if (out.ni && !out.ni_ctrl) out.ni_ctrl = { v: out.ni.v, src: out.ni.src };
     return Object.keys(out).length ? out : null;
   }
@@ -293,7 +330,8 @@
       if (n.includes('발행주식의총수') && (n.startsWith('Ⅳ') || n.includes('(Ⅱ-Ⅲ)') || n.startsWith('IV'))) {
         const r = splitRow(s);
         const nums = r.nums.filter(x => x > 0);
-        if (r.nums.length >= 3 && r.nums[2] > 0) return { v: r.nums[2], src: s.trim() };
+        // 열 순서: 보통주, 우선주(종류주식), 합계. 주가는 보통주 기준이라 보통주 수를 씁니다.
+        if (r.nums.length >= 3 && r.nums[1] > 0 && r.nums[0] > 0) return { v: r.nums[0], src: s.trim() + ' (보통주. 우선주 ' + r.nums[1].toLocaleString('ko-KR') + '주는 제외)', pref: r.nums[1] };
         if (nums.length) return { v: nums[0], src: s.trim() };
       }
     }
@@ -315,7 +353,14 @@
         if (!r.nums.length) continue;
         const L = norm(r.label);
         if (/단위|기준일/.test(L)) continue;
-        if (/^합계|^총계/.test(L)) return { v: r.nums[r.nums.length - 1] * unit, src: r.raw };
+        const partial = lines.slice(i, i + 6).some(x => /^\[\d\]/.test(x.trim()));
+        if (/^합계|^총계/.test(L)) {
+          // '452.404'처럼 쉼표 대신 점을 찍은 오타는 452,404로 읽습니다.
+          const lastTok = r.raw.trim().split(/\s+/).pop();
+          let v = r.nums[r.nums.length - 1];
+          if (/^\d{1,3}\.\d{3}$/.test(lastTok)) v = parseFloat(lastTok.replace('.', ''));
+          return { v: v * unit, src: r.raw + (partial ? ' (일부 사업의 수주만 공시됨)' : '') };
+        }
         if (!firstRow) firstRow = r;
       }
       if (firstRow) return { v: firstRow.nums[firstRow.nums.length - 1] * unit, src: firstRow.raw + ' (합계 줄이 없어 첫 줄 사용)' };
@@ -326,7 +371,7 @@
   function parseOverview(lines) {
     let at = -1;
     for (let i = 0; i < lines.length; i++) {
-      if (norm(lines[i]) === '1.사업의개요' && !/\.{5,}/.test(lines[i])) { at = i; break; }
+      if (/^1\.(\([^)]*\))?사업의개요$/.test(norm(lines[i])) && !/\.{5,}/.test(lines[i])) { at = i; break; }
     }
     if (at < 0) return null;
     let text = '';
@@ -388,7 +433,8 @@
       return null;
     };
     return tryBlock(/비용의성격별분류(\(연결\))?$/, /^(감가상각비|무형자산상각비|사용권자산(감가)?상각비)/, /감가상각비및무형자산상각비/)
-      || tryBlock(/(현금흐름표에관한정보|^\d+\.현금흐름표)(\(연결\))?$/, /^(감가상각비|무형자산상각비|사용권자산(감가)?상각비)/, /^감가상각비및무형자산상각비/);
+      || tryBlock(/(현금흐름표에관한정보|^\d+\.현금흐름표)(\(연결\))?$/, /^(감가상각비|무형자산상각비|사용권자산(감가)?상각비)/, /^감가상각비및무형자산상각비/)
+      || tryBlock(/^\d+\.영업비용(\(연결\))?$/, /^(감가상각비|무형자산상각비|사용권자산(감가)?상각비)/, /^감가상각비및무형자산상각비/);
   }
 
   function parseTicker(lines) {
@@ -410,8 +456,8 @@
       if (t === '-' && i > 0) { if (first < 0) first = i; nums.push(0); return; }
       if (NUM_RE.test(t)) {
         if (first < 0) first = i;
-        const neg = t.startsWith('(') || t.startsWith('-');
-        nums.push((neg ? -1 : 1) * parseFloat(t.replace(/[(),\-]/g, '')));
+        const neg = /^[(\-△▲]/.test(t);
+        nums.push((neg ? -1 : 1) * parseFloat(t.replace(/[(),\-△▲]/g, '')));
       }
     });
     const label = (first < 0 ? toks : toks.slice(0, first)).join(' ');
@@ -436,25 +482,50 @@
   function parseProducts(lines) {
     for (let i = 0; i < lines.length; i++) {
       const n = norm(lines[i]);
-      if (!/주요제품(등|및서비스)?의?(현황|매출)$/.test(n) || /\.{5,}/.test(lines[i])) continue;
-      const unit = findUnit(lines, i, 6);
+      if (!/주요제품(등|및서비스)?(등)?의?(현황|매출|매출비중|매출현황)$/.test(n) || /\.{5,}/.test(lines[i])) continue;
+      const unit = findUnit(lines, i, 14);
       if (!unit) continue;
       const rows = [];
       const ys = yearOrder(lines, i + 1, i + 8);
+      // '품목' 칸이 있으면 그 칸의 글자를 제품 이름으로 씁니다(사업부문·용도 칸과 섞이지 않게).
+      const items = lines.items || null;
+      let px = null;
+      if (items) for (let t = i + 1; t < Math.min(lines.length, i + 14) && px === null; t++) {
+        for (const it of (items[t] || [])) if (/^품\s*목$/.test(it.s.trim())) { px = it.x + it.w / 2; break; }
+      }
+      const nameFromItems = (j) => {
+        if (!items || !items[j]) return null;
+        const txt = [];
+        for (const it of items[j]) { const s2 = it.s.trim(); if (!s2) continue; if (NUM_RE.test(s2) || /%$/.test(s2)) break; txt.push(it); }
+        if (!txt.length) return null;
+        let pick = txt[0];
+        if (px !== null) pick = txt.reduce((a, b) => Math.abs(b.x + b.w / 2 - px) < Math.abs(a.x + a.w / 2 - px) ? b : a);
+        return pick.s.trim().replace(/,.*$/, '').trim();
+      };
+      let checkSum = 0, total = null;
       for (let j = i + 1; j < Math.min(lines.length, i + 40); j++) {
         if (isPageNoise(lines[j])) continue;
         const nj = norm(lines[j]);
-        if (/^(합계|총계)/.test(nj) || /^\(?주\d?\)/.test(nj) || (isHeading(nj) && j > i + 2)) break;
+        if (/^(합계|총계)/.test(nj)) { const t = amountsRow(lines[j]); if (t.nums.length) total = t.nums[0]; break; }
+        if (/^\(?주\d?\)/.test(nj) || (isHeading(nj) && j > i + 2)) break;
         const r = amountsRow(lines[j]);
+        if (r.nums.length && /내부거래|제거|조정/.test(nj)) checkSum += r.nums[0];
         if (!r.nums.length || !r.nums.some(v => Math.abs(v) > 0)) continue;
         let label = r.label.replace(/^[-–·\s]+/, '').replace(/\s+-$/, '');
         const comma = label.search(/\S+,/);
         if (comma > 0) label = label.slice(0, comma);
         label = label.replace(/\s+/g, ' ').trim();
         if (!label || /단위|기준일|금액|비율|^\d{4}년/.test(label)) continue;
+        if (/내부거래|제거|조정|합계|총계|소계/.test(label.replace(/\s/g, ''))) continue;
+        const itemName = nameFromItems(j);
+        if (itemName && !/㈜|\(주\)|주식회사/.test(label)) label = itemName;
+        if (/㈜|\(주\)|주식회사/.test(label)) return null; // 회사 이름과 제품이 섞인 표는 제품별로 나누기 어려워 쓰지 않음
         if (label.length > 22) label = label.slice(0, 21) + '…';
         rows.push({ name: label, amounts: orderAmounts(r.nums, ys).map(v => v * unit), src: lines[j].trim() });
+        checkSum += r.nums[0];
       }
+      // 합계와 맞지 않으면(여러 줄로 얽힌 표를 잘못 읽은 경우) 쓰지 않고 부문 정보로 대신합니다.
+      if (rows.length && total !== null && Math.abs(checkSum - total) > Math.abs(total) * 0.01 + 1) return null;
       if (rows.length) return rows;
     }
     return null;
@@ -463,7 +534,7 @@
   function parseRnd(lines) {
     for (let i = 0; i < lines.length; i++) {
       const n = norm(lines[i]);
-      if (!/연구개발비(용)?(의?현황)?$/.test(n) || /\.{5,}/.test(lines[i]) || n.length > 20) continue;
+      if (!/연구개발비(용)?(의?현황)?(\((연결|별도)(기준)?\))?$/.test(n) || /\.{5,}/.test(lines[i]) || n.length > 26) continue;
       const unit = findUnit(lines, i, 14);
       if (!unit) continue;
       const ys = yearOrder(lines, i + 1, i + 14);
@@ -494,11 +565,16 @@
   }
   function parsePatents(lines) {
     for (const s of lines) {
+      if (!/특허/.test(s)) continue;
       const m = s.match(/총\s*([\d,]+)\s*건[^.。]{0,40}특허/) || s.match(/특허[^.。]{0,30}총\s*([\d,]+)\s*건/);
       if (m) return { v: parseInt(m[1].replace(/,/g, ''), 10), src: s.trim() };
+      // '국내 등록특허 3,804건 및 해외 등록특허 2,155건'처럼 나눠 적은 경우 합칩니다.
+      const parts = [...s.matchAll(/(국내|해외)\s*(등록\s*)?특허\s*([\d,]+)\s*건/g)];
+      if (parts.length) return { v: parts.reduce((a, x) => a + parseInt(x[3].replace(/,/g, ''), 10), 0), src: s.trim() };
     }
     return null;
   }
+
 
   // ---------- 영업부문(자회사·사업부별) 매출과 영업이익 ----------
   const segName = (s) => s.replace(/\(주\)|㈜|주식회사/g, '').replace(/\s+/g, ' ').trim();
@@ -508,12 +584,12 @@
     for (let i = 0; i < lines.length; i++) {
       const n = norm(lines[i]);
       if (/\.{5,}/.test(lines[i])) continue;
-      if (/영업부문(정보|에대한공시|별정보)/.test(n) && /단위/.test(lines.slice(i, i + 10).join(' '))) { start = i; break; }
+      if (/영업부문(정보|에대한공시|별정보)|^\d+\.부문별보고/.test(n) && /단위/.test(lines.slice(i, i + 25).join(' '))) { start = i; break; }
     }
     if (start < 0) return null;
-    const unit = findUnit(lines, start, 10) || 1e-8;
-    const end = Math.min(lines.length, start + 90);
-    const isRev = (L) => /^(영업수익|매출액|수익|매출)$/.test(L);
+    const unit = findUnit(lines, start, 25) || 1e-8;
+    const end = Math.min(lines.length, start + 220);
+    const isRev = (L) => /^(영업수익|매출액|수익|매출|수익\(매출액\)|영업수익\(매출액\)|매출액\(수익\)|외부고객으로부터의수익)$/.test(L);
     const isOp = (L) => /^(영업손익|영업이익|영업손실|부문손익|부문이익)$/.test(L);
     // (1) 세로형: 머리글 줄에 '매출액'과 '영업손익'이 함께 있음
     for (let i = start; i < end; i++) {
@@ -535,7 +611,7 @@
           if (isPageNoise(lines[j])) continue;
           const r = splitRow(lines[j]);
           const L = norm(r.label);
-          if (/^(소계|합계|내부거래|조정|연결|계)/.test(L) && r.nums.length) break;
+          if ((/^(소계|합계|내부거래|조정|연결|계)/.test(L) || /합계|총계/.test(L)) && r.nums.length) break;
           if (!r.nums.length) {
             if (/(매출액|영업수익)/.test(norm(lines[j])) && /(영업손익|영업이익)/.test(norm(lines[j]))) break;
             if (/^\(\d\)|^[가-하]\.|^\d+\./.test(norm(lines[j])) && out.length) break;
@@ -549,6 +625,7 @@
             name = pending.join(' ');
           }
           pending = [];
+          name = name.replace(/^((보고|영업)?부문\s+)+/, '');
           const row = { name: segName(name), rev: (r.nums[ri] || 0) * unit, op: (r.nums[oi] || 0) * unit };
           if (!r.label) lastWrapped = row; else lastWrapped = null;
           out.push(row);
@@ -569,6 +646,7 @@
     }
     // (2) 가로형: '영업수익' 줄에 부문별 숫자가 옆으로 나열됨 → 부문 합계와 맞는 앞쪽 열을 부문으로 봄
     const blocks = [];
+    let rawK = 0;
     let i = start;
     while (i < end && blocks.length < 2) {
       let r1 = -1, r2 = -1;
@@ -576,7 +654,11 @@
       if (r1 < 0) break;
       for (let t = r1 + 1; t < Math.min(end, r1 + 6); t++) { const r = splitRow(lines[t]); if (r.nums.length >= 2 && isOp(clean(norm(r.label)))) { r2 = t; break; } }
       if (r2 < 0) break;
-      const revN = splitRow(lines[r1]).nums, opN = splitRow(lines[r2]).nums;
+      let revN = splitRow(lines[r1]).nums, opN = splitRow(lines[r2]).nums;
+      // '3개월 / 누적' 열이 번갈아 있으면 누적 열만 씁니다.
+      const headQ = lines.slice(Math.max(start, r1 - 6), r1).join(' ');
+      const cumOnly = /3개월/.test(headQ) && /누적/.test(headQ) && revN.length % 2 === 0;
+      if (cumOnly) { revN = revN.filter((_, k) => k % 2 === 1); opN = opN.filter((_, k) => k % 2 === 1); }
       const groups = [];
       let from = 0;
       while (from < revN.length) {
@@ -590,11 +672,13 @@
         from = k + 1;
         while (from < revN.length && Math.abs(revN[from]) > 0 && groups.length && false) from++;
       }
-      if (!groups.length) break;
+      if (!groups.length) { i = r1 + 1; continue; }
+      if (blocks.length && (groups[0][1] - groups[0][0]) !== rawK) { i = r2 + 1; continue; }
       // 머리글 이름: 숫자 조각의 x 위치에 가장 가까운 머리글 글자를 모읍니다.
       const names = [];
       if (items && items[r1]) {
-        const numItems = items[r1].filter(it => /^\(?-?\d[\d,]*\)?$|^-$/.test(it.s.trim()));
+        let numItems = items[r1].filter(it => /^\(?-?\d[\d,]*\)?$|^-$/.test(it.s.trim()));
+        if (cumOnly) numItems = numItems.filter((_, k) => k % 2 === 1);
         // 숫자는 열의 오른쪽 끝에, 머리글은 왼쪽 끝에 맞춰져 있어 '오른쪽 끝' 구간으로 열을 나눕니다.
         const rights = numItems.map(it => it.x + it.w);
         const cols = rights.map(() => []);
@@ -608,7 +692,10 @@
             if (best >= 0) cols[best].push(txt);
           }
         }
-        cols.forEach((parts) => {
+        cols.forEach((parts0) => {
+          let parts = parts0.filter(p => !/^(부문|부문의|합계|합|계|영업부문|중요한|조정사항|기업|전체|총계|부문의 합계|중요한 조정사항|기업 전체 총계|보고부문|당반기|전반기|당기|전기|당분기|전분기|구분|구 분|구|분|3개월|누적)$/.test(p));
+          // 여러 열을 묶는 상위 이름(예: '통신사업' 아래 '무선통신사업')은 빼고 아래쪽 이름을 씁니다.
+          if (parts.length >= 2 && parts[parts.length - 1].length >= 4 && /(사업|부문)$/.test(parts[0])) parts = parts.slice(1);
           let nm = '';
           for (const p of parts) {
             if (/^(부문|부문의|합계|합|계|영업부문|중요한|조정사항|기업|전체|총계|부문의 합계|중요한 조정사항|기업 전체 총계|보고부문|당반기|전반기|당기|전기|당분기|전분기|구분|구 분|구|분)$/.test(p)) continue;
@@ -618,6 +705,18 @@
         });
       }
       const [g0, gk] = groups[0];
+      // 약칭 줄(예: 'HS MS VS ES 이노텍 기타')이 있으면 그것을 부문 이름으로 씁니다.
+      if (items) {
+        for (let t = r1 - 1; t > Math.max(start, r1 - 30); t--) {
+          if (splitRow(lines[t]).nums.length) break;
+          const its = (items[t] || []).map(it => it.s.trim()).filter(Boolean);
+          if (its.length === gk - g0 && its.every(x => x.length <= 8 && !/[.,]/.test(x) && !/^(당|전)(반기|분기|기)$|^구\s*분$|합\s*계|^계$|부문의/.test(x))) {
+            const firstX = (items[t].find(it => it.s.trim()) || {}).x || 0;
+            const numX = items[r1].find(it => /\d/.test(it.s)) ? items[r1].find(it => /\d/.test(it.s)).x : 0;
+            if (firstX >= numX - 60) { its.forEach((x, k) => { names[g0 + k] = x; }); break; }
+          }
+        }
+      }
       const mk = (a, b) => {
         const out = [];
         for (let c = a; c < b; c++) {
@@ -628,7 +727,10 @@
         return out;
       };
       blocks.push(mk(g0, gk));
-      if (groups[1] && blocks.length < 2) blocks.push(mk(groups[1][0], groups[1][1]).map((r, idx) => ({ ...r, name: blocks[0][idx] ? blocks[0][idx].name : r.name })));
+      if (blocks.length === 1) rawK = gk - g0;
+      const headTxt = lines.slice(Math.max(start, r1 - 12), r1).join(' ').replace(/\s/g, '');
+      const twoPeriods = /당(반기|분기|기)/.test(headTxt) && /전(반기|분기|기)/.test(headTxt);
+      if (groups[1] && twoPeriods && blocks.length < 2) blocks.push(mk(groups[1][0], groups[1][1]).map((r, idx) => ({ ...r, name: blocks[0][idx] ? blocks[0][idx].name : r.name })));
       i = r2 + 1;
     }
     if (!blocks.length) return null;
