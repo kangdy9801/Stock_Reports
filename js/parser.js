@@ -10,7 +10,7 @@
   else root.DartParser = api;
 })(typeof self !== 'undefined' ? self : this, function () {
   const norm = (s) => String(s || '').replace(/[\s·ㆍ\[\]［］*※]/g, '');
-  const clean = (L) => L.replace(/\((손실|이익|손익)\)/g, '');
+  const clean = (L) => L.replace(/\(주[\d,\s]*\)/g, '').replace(/\((손실|이익|손익)\)/g, '');
 
   const NUM_RE = /^\(?-?\d[\d,]*(\.\d+)?\)?$/;
   function splitRow(line) {
@@ -183,7 +183,7 @@
       else if (L.startsWith('기타수익') || L.startsWith('기타영업외수익')) put('oth_inc');
       else if (L.startsWith('기타비용') || L.startsWith('기타영업외비용')) put('oth_exp');
       else if (/^법인세(비용)?차감전/.test(L)) put('pbt');
-      else if (!cur.ni && /^(당기|반기|분기)?(연결)?(순이익|순손실|당기순이익|당기순손실)/.test(L) && !L.includes('귀속') && !L.includes('주당')) { put('ni'); afterNi = true; }
+      else if (!cur.ni && /^(연결)?(총)?(당기|반기|분기)?(연결)?(총)?(순이익|순손실|당기순이익|당기순손실)/.test(L) && !L.includes('귀속') && !L.includes('주당')) { put('ni'); afterNi = true; }
       else if (niAttr && !cur.ni_ctrl && L.includes('지배기업') && !L.includes('비지배')) put('ni_ctrl');
       else if (niAttr && !cur.nci && L.startsWith('비지배')) put('nci');
     }
@@ -240,7 +240,7 @@
       const put = (k) => { if (!out[k]) out[k] = { v: r.nums[1] * unit, src: r.raw }; };
       if (['매출액', '수익(매출액)', '수익', '영업수익', '매출'].includes(L)) put('rev');
       else if (L.startsWith('영업이익') || L.startsWith('영업손실')) put('op');
-      else if (/^(당기|반기|분기)?순이익|^(당기|반기|분기)?순손실/.test(L)) { put('ni'); afterNi = true; }
+      else if (/^(연결)?(총)?(당기|반기|분기)?(연결)?(총)?순(이익|손실)/.test(L) && !L.includes('주당')) { put('ni'); afterNi = true; }
       else if (afterNi && L.includes('지배기업')) put('ni_ctrl');
     }
     if (out.ni && !out.ni_ctrl) out.ni_ctrl = { v: out.ni.v, src: out.ni.src };
@@ -256,7 +256,7 @@
       if (m && !company) company = m[1].replace(/\s{2,}.*/, '').trim();
       const n = norm(s);
       if (!type && /^(반기보고서|분기보고서|사업보고서)$/.test(n)) type = n;
-      const d = s.match(/(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일\s*까지/);
+      const d = s.match(/(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일\s*까지/) || s.match(/(\d{4})\s*[.\-\/]\s*(\d{1,2})\s*[.\-\/]\s*(\d{1,2})\s*까지/);
       if (d && !end) end = { y: +d[1], m: +d[2], d: +d[3] };
     }
     if (!type) {
@@ -275,6 +275,19 @@
   }
 
   function parseShares(lines) {
+    const found = parseSharesMain(lines);
+    if (found) return found;
+    // 분기보고서 등에서 '주식의 총수' 표가 없으면 주석의 기말 유통주식수(보통주)를 씁니다.
+    for (const s of lines) {
+      const n = norm(s);
+      if (/^기말유통주식수/.test(n)) {
+        const r = splitRow(s);
+        if (r.nums.length && r.nums[0] > 0) return { v: r.nums[0], src: s.trim() + ' (보통주 유통주식수, 자기주식 제외)' };
+      }
+    }
+    return null;
+  }
+  function parseSharesMain(lines) {
     for (const s of lines) {
       const n = norm(s);
       if (n.includes('발행주식의총수') && (n.startsWith('Ⅳ') || n.includes('(Ⅱ-Ⅲ)') || n.startsWith('IV'))) {
@@ -598,7 +611,7 @@
         cols.forEach((parts) => {
           let nm = '';
           for (const p of parts) {
-            if (/^(부문|부문의|합계|합|계|영업부문|중요한|조정사항|기업|전체|총계|부문의 합계|중요한 조정사항|기업 전체 총계|당반기|전반기|당기|전기|당분기|전분기|구분|구 분|구|분)$/.test(p)) continue;
+            if (/^(부문|부문의|합계|합|계|영업부문|중요한|조정사항|기업|전체|총계|부문의 합계|중요한 조정사항|기업 전체 총계|보고부문|당반기|전반기|당기|전기|당분기|전분기|구분|구 분|구|분)$/.test(p)) continue;
             nm += (nm && /[A-Za-z0-9]$/.test(nm) && /^[A-Za-z0-9]/.test(p)) ? ' ' + p : p;
           }
           names.push(segName(nm.replace(/\(?단위[^)]*\)?/g, '').replace(/^[^가-힣A-Za-z]*(천원|백만원|원)?\)?\.?/, '')));
@@ -607,7 +620,11 @@
       const [g0, gk] = groups[0];
       const mk = (a, b) => {
         const out = [];
-        for (let c = a; c < b; c++) out.push({ name: names[c] || `부문 ${c - a + 1}`, rev: revN[c] * unit, op: (opN[c] || 0) * unit });
+        for (let c = a; c < b; c++) {
+          const nm = names[c] || `부문 ${c - a + 1}`;
+          if (/조정|내부거래|제거|연결/.test(nm)) continue; // 조정 열은 부문이 아님
+          out.push({ name: nm, rev: revN[c] * unit, op: (opN[c] || 0) * unit });
+        }
         return out;
       };
       blocks.push(mk(g0, gk));

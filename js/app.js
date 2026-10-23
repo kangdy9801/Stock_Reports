@@ -128,7 +128,8 @@
         if (!rep.is && !rep.bs) throw new Error('재무제표를 찾지 못했습니다. DART에서 내려받은 정기보고서 PDF인지 확인하세요.');
         if (rep.meta.type && rep.meta.type !== cfg.accept) throw new Error(`${rep.meta.type}입니다. ${cfg.wrong}`);
         if (!rep.meta.type) throw new Error(`보고서 종류를 알 수 없습니다. ${cfg.wrong}`);
-        if (st.reports.some(r => r.meta.label === rep.meta.label && (r.meta.company || '') === (rep.meta.company || ''))) throw new Error(`${rep.meta.label} 보고서가 이미 들어 있습니다.`);
+        if (!rep.meta.end || !rep.meta.label) throw new Error('보고서 기간(몇 년 몇 분기인지)을 읽지 못했습니다. 표지에 \'○○년 ○월 ○일 까지\' 같은 기간 표시가 있는 DART 원본 PDF인지 확인하세요.');
+        if (st.reports.some(r => r.meta.label && r.meta.label === rep.meta.label && (r.meta.company || '') === (rep.meta.company || ''))) throw new Error(`${rep.meta.label} 보고서가 이미 들어 있습니다.`);
         rep.id = job.id; rep.fileName = job.fileName;
         st.reports.push(rep);
         st.log.push({ at: nowIso(), action: `파일 추가: ${job.fileName}` });
