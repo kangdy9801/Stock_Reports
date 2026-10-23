@@ -267,20 +267,20 @@
       flowChartBlock(R),
       ...A.STEPS.map(s => stepBlock(s, R)),
       insightBlock(R),
-      checklistBlock(R),
+      memoBlock(),
       dataEditor(R),
       logBlock()
     );
     drawFlow();
   }
 
-  const VERDICT_CLASS = { '개선': 'good', '양호': 'ok', '낮은 편': 'ok', '보통': 'flat', '유지': 'flat', '주의': 'warn', '부담': 'warn', '위험': 'bad', '직접 확인': 'manual', '확인 필요': 'manual', '입력 필요': 'manual' };
+  const VERDICT_CLASS = { '저평가': 'good', '개선': 'good', '양호': 'ok', '낮은 편': 'ok', '보통': 'flat', '유지': 'flat', '주의': 'warn', '부담': 'warn', '위험': 'bad', '직접 확인': 'manual', '확인 필요': 'manual', '입력 필요': 'manual' };
   const chip = (v) => h('span', { class: 'chip ' + (VERDICT_CLASS[v] || 'flat'), text: v });
 
   function summaryText(R) {
     const counts = {};
     for (const s of A.STEPS) { const v = R.verdicts[s.step].verdict; counts[v] = (counts[v] || 0) + 1; }
-    const order = ['개선', '양호', '낮은 편', '보통', '주의', '부담', '위험', '직접 확인', '확인 필요', '입력 필요'];
+    const order = ['개선', '저평가', '양호', '낮은 편', '보통', '주의', '부담', '위험', '확인 필요', '입력 필요'];
     const parts = order.filter(k => counts[k]).map(k => `${k} ${counts[k]}개`);
     return `9단계 판정: ${parts.join(', ')}. 아래 판정표의 이유를 먼저 읽고, 단계별 숫자로 확인하세요.`;
   }
@@ -319,8 +319,8 @@
   function flowChartBlock(R) {
     const legend = h('div', { class: 'legend' }, R.cols.map((c, i) => h('span', null, h('i', { class: 'sw sw' + (i === R.cols.length - 1 ? 'last' : i) }), c.label)));
     return h('section', { class: 'block', id: 'flow' },
-      h('h2', { text: mode === 'quarter' ? '분기 매출과 이익(3개월)' : '매출에서 남는 현금까지' }),
-      h('p', { class: 'note', text: mode === 'quarter' ? '분기별 3개월 손익을 나란히 봅니다. 현금흐름은 누적 기간이 달라 그래프에서 뺐습니다. 단위 억원.' : '매출이 이익과 현금으로 얼마나 이어졌는지 기간별로 나란히 봅니다. 0선 왼쪽은 마이너스입니다. 단위 억원.' }),
+      h('h2', { text: '매출에서 남는 현금까지' }),
+      h('p', { class: 'note', text: (mode === 'quarter' ? '손익은 분기 3개월, 현금흐름은 연초부터 누적 숫자입니다. ' : '') + '매출 → 매출총이익(괄호 안은 매출총이익률) → 영업이익 → 영업현금흐름 → FCF 순서로, 매출이 이익과 현금으로 얼마나 이어졌는지 봅니다. 0선 왼쪽은 마이너스입니다. 단위 억원.' }),
       legend,
       h('div', { class: 'chart', id: 'flow-chart' })
     );
@@ -331,10 +331,10 @@
     if (!box || !last) return;
     box.replaceChildren();
     const KEYS = mode === 'quarter'
-      ? [['rev', '매출액'], ['gp', '매출총이익'], ['op', '영업이익'], ['ni_ctrl', '지배주주 순이익']]
+      ? [['rev', '매출액(분기)'], ['gp', '매출총이익(분기)'], ['op', '영업이익(분기)'], ['ocf', '영업현금흐름(누적)'], ['fcf', 'FCF(누적)']]
       : [['rev', '매출액'], ['gp', '매출총이익'], ['op', '영업이익'], ['ocf', '영업현금흐름'], ['fcf', 'FCF']];
     const cols = last.cols, D = last.D;
-    const rows = KEYS.map(([k, name]) => ({ name, vals: D.map(d => d[k]) })).filter(r => r.vals.some(v => v !== undefined));
+    const rows = KEYS.map(([k, name]) => ({ k, name, vals: D.map(d => d[k]) })).filter(r => r.vals.some(v => v !== undefined));
     const all = rows.flatMap(r => r.vals.filter(v => v !== undefined));
     if (!all.length) { box.append(h('p', { class: 'note', text: '그릴 숫자가 없습니다.' })); return; }
     const W = Math.max(300, box.clientWidth || 600);
@@ -344,7 +344,7 @@
     const svg = document.createElementNS(NS, 'svg');
     svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('width', '100%'); svg.setAttribute('role', 'img');
     svg.setAttribute('aria-label', '매출, 매출총이익, 영업이익, 영업현금흐름, FCF 기간별 막대 그래프');
-    const labelW = Math.min(110, W * 0.26), valW = 58;
+    const labelW = Math.min(mode === 'quarter' ? 130 : 110, W * 0.3), valW = 92;
     const lo = Math.min(0, ...all), hi = Math.max(0, ...all);
     const x0 = labelW + (lo < 0 ? valW : 8), x1 = W - valW;
     const sx = (v) => x0 + (v - lo) / ((hi - lo) || 1) * (x1 - x0);
@@ -360,7 +360,8 @@
         const rect = mk('rect', { x: a, y, width: Math.max(1.5, b - a), height: bar, rx: 3, class: 'bar ' + (i === n - 1 ? 'last' : 'b' + i) });
         rect.append(mk('title', {}, `${cols[i].label} ${r.name}: ${fmt(v)}억원`));
         svg.append(rect);
-        svg.append(mk('text', { x: v < 0 ? a - 4 : b + 4, y: y + bar - 2.5, class: 'val', 'text-anchor': v < 0 ? 'end' : 'start' }, fmt(v)));
+        const lab = r.k === 'gp' && D[i].gpm !== undefined ? `${fmt(v)} (${D[i].gpm.toFixed(1)}%)` : fmt(v);
+        svg.append(mk('text', { x: v < 0 ? a - 4 : b + 4, y: y + bar - 2.5, class: 'val', 'text-anchor': v < 0 ? 'end' : 'start' }, lab));
       });
     });
     box.append(svg);
@@ -374,11 +375,32 @@
     rev: '매출액(분기 3개월)', gp: '매출총이익(분기)', sga: '판매비와관리비(분기)', op: '영업이익(분기)', ni_ctrl: '지배주주 순이익(분기)',
     rev_yoy: '매출 성장률(전년 같은 분기 대비)'
   };
+  function bizTableRows(step, R, ci) {
+    const n = R.cols.length;
+    const cum = mode === 'quarter' ? '(누적)' : '';
+    let list = [];
+    if (step === 1) list = A.bizRows(R.cols, 'products').filter(r => r.vals.some(v => v !== undefined && Math.abs(v) >= 0.5))
+      .sort((a, b) => (b.vals[n - 1] ?? -1e9) - (a.vals[n - 1] ?? -1e9)).slice(0, 6)
+      .map(r => ({ label: `${r.name} 매출${cum}`, vals: r.vals, better: 'up' }));
+    if (step === 8) list = A.bizRows(R.cols, 'segments', 'op').filter(r => r.vals.some(v => v !== undefined && Math.abs(v) >= 1))
+      .map(r => ({ label: `${r.name} 영업이익${cum}`, vals: r.vals, better: 'up' }));
+    return list.map(r => {
+      const a = ci >= 0 ? r.vals[ci] : undefined, b = r.vals[n - 1];
+      const ch = A.changeText(a, b, '억원');
+      return h('tr', null,
+        h('th', { scope: 'row', text: r.label }),
+        r.vals.map((v, i) => h('td', { class: i === n - 1 ? 'latest' : '', text: fmt(v) })),
+        h('td', { class: 'chg ' + A.tone(ch.dir, r.better), text: ch.text || '' })
+      );
+    });
+  }
   function metricTable(step, R) {
     const ms = A.METRICS.filter(m => m.step === step);
     const n = R.cols.length;
     const ci = A.compareIndex(R.cols);
-    const rows = ms.map(m => {
+    const pre = step === 1 ? bizTableRows(1, R, ci) : [];
+    const post = step === 8 ? bizTableRows(8, R, ci) : [];
+    const rows0 = ms.map(m => {
       const vals = R.D.map(d => d[m.key]);
       if (vals.every(v => v === undefined)) return null;
       const a = ci >= 0 ? vals[ci] : undefined, b = vals[n - 1];
@@ -386,10 +408,11 @@
       const t = A.tone(ch.dir, m.better);
       return h('tr', null,
         h('th', { scope: 'row', text: ((mode === 'quarter' && QLABEL[m.key]) || m.label) + (m.unit && m.unit !== '억원' ? ` (${m.unit})` : '') }),
-        vals.map((v, i) => h('td', { class: i === n - 1 ? 'latest' : '', text: fmt(v, m.unit) })),
+        vals.map((v, i) => h('td', { class: i === n - 1 ? 'latest' : '' }, fmt(v, m.unit), m.key === 'roe' && v >= 15 ? h('span', { class: 'badge good', text: '좋음' }) : null)),
         h('td', { class: 'chg ' + t, text: ch.text || '' })
       );
     }).filter(Boolean);
+    const rows = [...pre, ...rows0, ...post];
     if (!rows.length) return h('p', { class: 'note', text: '이 단계에서 보여줄 숫자를 찾지 못했습니다. 맨 아래 추출값 표에서 입력할 수 있습니다.' });
     return h('div', { class: 'table-scroll' },
       h('table', { class: 'mtable' },
@@ -410,13 +433,9 @@
     const body = [];
     if (s.step === 1) {
       const latest = R.cols[R.cols.length - 1];
-      if (latest.rep.overview) body.push(h('blockquote', { class: 'overview' }, h('p', { text: latest.rep.overview }), h('cite', { text: '사업보고서·반기보고서의 \'1. 사업의 개요\' 앞부분' })));
       body.push(metricTable(1, R));
-      body.push(h('label', { class: 'memo-label', for: 'memo1', text: '고객이 이 회사를 고르는 이유, 대체하기 어려운 이유 (내 메모)' }));
-      const ta = h('textarea', { id: 'memo1', rows: '3', placeholder: '예: 부품을 직접 만들어 경쟁사보다 싸게 공급한다. 한번 채택되면 바꾸기 어렵다.' });
-      ta.value = state.memo1 || '';
-      ta.addEventListener('input', () => { state.memo1 = ta.value; markDirty(); });
-      body.push(ta);
+      if (mode === 'quarter') body.push(h('p', { class: 'note', text: '제품별 매출과 연구개발비는 보고서의 누적 숫자입니다.' }));
+      if (latest.rep.overview) body.push(h('details', { class: 'overview-wrap' }, h('summary', { text: '보고서의 사업 개요 보기' }), h('blockquote', { class: 'overview' }, h('p', { text: latest.rep.overview }), h('cite', { text: '\'II. 사업의 내용 - 1. 사업의 개요\' 앞부분' }))));
     } else if (s.step === 9) {
       body.push(valuationEditor(R));
     } else {
@@ -425,6 +444,7 @@
     if (mode === 'quarter' && s.step === 2) body.push(h('p', { class: 'note', text: '손익은 각 분기 3개월 숫자입니다. EBITDA만 상각비가 누적 숫자라 누적 기준입니다. 계절 영향이 있으니 변화 열(전년 같은 분기 대비)을 중심으로 보세요.' }));
     if (mode === 'quarter' && [3, 4, 7].includes(s.step)) body.push(h('p', { class: 'note', text: '현금흐름은 연초부터 누적 숫자입니다(1분기 3개월, 3분기 9개월). 서로 다른 분기의 누적 숫자는 나란히 비교하지 말고 변화 열을 보세요.' }));
     if (s.step === 7) body.push(h('p', { class: 'note', text: '이자보상배율은 현금흐름표의 이자 지급액으로 계산합니다. 주석의 이자비용과 조금 다를 수 있습니다.' }));
+    if (s.step === 8) body.push(h('p', { class: 'note', text: '부문별 영업이익은 주석의 영업부문 정보(자회사·사업부별)에서 가져온 내부거래 제거 전 숫자입니다.' + (mode === 'quarter' ? ' 누적 숫자입니다.' : '') }));
     if (s.step === 5) body.push(h('p', { class: 'note', text: '금융자산에는 담보로 잡혀 있거나 바로 팔기 어려운 자산이 섞일 수 있습니다. 주석의 담보 제공 자산을 확인하세요.' }));
     const c0 = R.cols[0];
     const dc = R.cols.find(c => c.derived && c.note);
@@ -501,13 +521,18 @@
     box.replaceChildren(
       card('시가총액', o.mcap, '억원', '주가 × 발행주식수'),
       card('PER', o.per, '배', loss ? '순이익이 적자라 계산 안 됨' : '시가총액 ÷ 12개월 지배주주 순이익. 몇 년치 이익에 사는지'),
-      card2('PEG', o.peg, '', loss ? 'PER이 없어 계산 안 됨' : !(o.growth > 0) ? '성장률이 0 이하라 계산 안 됨' : 'PER ÷ 이익 성장률(%). 1 미만이면 성장 대비 싼 편', 2),
+      withBadge(card2('PEG', o.peg, '', loss ? 'PER이 없어 계산 안 됨' : !(o.growth > 0) ? '성장률이 0 이하라 계산 안 됨' : 'PER ÷ 이익 성장률(%). 1보다 낮으면 저평가', 2), o.peg !== undefined && o.peg < 1 ? '저평가' : null),
+      withBadge(card('ROE', o.roe, '%', '12개월 지배주주 순이익 ÷ 지배주주 자본. 15% 이상이면 좋음'), o.roe !== undefined && o.roe >= 15 ? '좋음' : null),
       card('PBR', o.pbr, '배', '시가총액 ÷ 지배주주 자본. 1배면 장부가치와 같은 가격'),
       card('PSR', o.psr, '배', '시가총액 ÷ 12개월 매출. 적자 기업 비교에 유용'),
       card('EV/EBITDA', o.ev_ebitda, '배', 'EV ÷ 12개월 EBITDA. EV = 시가총액 − 순현금 + 비지배지분'),
       card('FCF 수익률', o.fcf_yield, '%', '12개월 FCF ÷ 시가총액. 높을수록 싸다는 뜻'),
       card('EV/영업이익', o.ev_op, '배', 'EV ÷ 12개월 영업이익')
     );
+  }
+  function withBadge(c, label) {
+    if (label) { c.classList.add('flag'); c.querySelector('.vlab').append(' ', h('span', { class: 'badge good', text: label })); }
+    return c;
   }
   function updateValuation() {
     if (!last) return;
@@ -526,10 +551,16 @@
 
   function insightBlock(R) {
     const list = R.insights.length ? h('ul', { class: 'insights' }, R.insights.map(i => h('li', { class: 'ins ' + i.tone }, h('h3', { text: i.title }), h('p', { text: i.body })))) :
-      h('p', { class: 'note', text: '특별히 짚을 점을 찾지 못했습니다. 그래도 아래 확인사항은 꼭 살펴보세요.' });
+      h('p', { class: 'note', text: '특별히 짚을 점을 찾지 못했습니다..' });
     return h('section', { class: 'block', id: 'insights' }, h('h2', { text: '함께 알아두면 좋은 점' }), list);
   }
 
+  function memoBlock() {
+    const notes = h('textarea', { id: 'notes', rows: '4', placeholder: '확인한 내용, 매수·매도 판단 근거, 다시 볼 날짜 등을 적어 두세요.' });
+    notes.value = state.notes || '';
+    notes.addEventListener('input', () => { state.notes = notes.value; markDirty(); });
+    return h('section', { class: 'block', id: 'memo' }, h('h2', { text: '메모' }), notes);
+  }
   function checklistBlock(R) {
     const done = () => R.checks.filter(c => state.checks[c.id]).length;
     const counter = h('span', { class: 'count', text: `${done()} / ${R.checks.length} 확인` });
@@ -662,7 +693,7 @@
     else box.append(h('ul', { class: 'reclist' }, list.map(r => h('li', null,
       h('div', null,
         h('strong', null, h('span', { class: 'mode-tag', text: r.mode === 'annual' ? '사업보고서' : r.mode === 'quarter' ? '분기' : '반기' }), ' ', r.title),
-        h('span', { class: 'note', text: `저장 ${fmtDate(r.savedAt)}  |  확인사항 ${Object.values(r.checks || {}).filter(Boolean).length}개 체크${r.valuation && r.valuation.price ? `  |  주가 ${fmt(r.valuation.price, '원')}원` : ''}` })
+        h('span', { class: 'note', text: `저장 ${fmtDate(r.savedAt)}${r.valuation && r.valuation.price ? `  |  주가 ${fmt(r.valuation.price, '원')}원${r.valuation.date ? ` (${r.valuation.date})` : ''}` : ''}` })
       ),
       h('div', { class: 'rec-actions' },
         h('button', { type: 'button', class: 'btn small', text: '열기', onclick: () => { if (dirty && !confirm('지금 화면의 저장하지 않은 변경은 사라집니다. 열까요?')) return; $('#records-dialog').close(); load(S.get(r.id)); } }),

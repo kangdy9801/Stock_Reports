@@ -11,6 +11,7 @@
   async function pdfToLines(pdfjsLib, data, onProgress) {
     const doc = await pdfjsLib.getDocument({ data, disableFontFace: true, isEvalSupported: false }).promise;
     const lines = [];
+    const items = []; // 줄마다 글자 조각의 x 위치(표 머리글 해석용)
     for (let p = 1; p <= doc.numPages; p++) {
       const page = await doc.getPage(p);
       const content = await page.getTextContent();
@@ -39,12 +40,15 @@
           lastEnd = it.x + it.w;
         }
         lines.push(out.replace(/\s+$/, ''));
+        items.push(r.items.map(it => ({ x: it.x, w: it.w, s: it.s })));
       }
       lines.push('\f');
+      items.push([]);
       if (onProgress) onProgress(p, doc.numPages);
       page.cleanup();
     }
     await doc.destroy();
+    Object.defineProperty(lines, 'items', { value: items, enumerable: false });
     return lines;
   }
   return { pdfToLines };

@@ -44,14 +44,18 @@
     { key: 'equity_ctrl', label: '지배주주 자본', group: '재무상태' },
     { key: 'capital', label: '자본금', group: '재무상태' },
     { key: 'backlog', label: '수주잔고', group: '사업' },
+    { key: 'rnd', label: '연구개발비', group: '사업' },
+    { key: 'researchers', label: '연구인력(명)', group: '사업', unit: '명' },
+    { key: 'patents', label: '등록 특허(건)', group: '사업', unit: '건' },
     { key: 'shares', label: '발행주식수(주)', group: '사업', unit: '주' }
   ];
 
   // 단계별로 보여줄 지표
   const METRICS = [
-    { key: 'rev', step: 1, label: '매출액', unit: '억원', better: 'up' },
-    { key: 'rev_yoy', step: 1, label: '매출 성장률(1년 전 대비)', unit: '%', better: 'up', noDelta: true },
-    { key: 'backlog', step: 1, label: '수주잔고', unit: '억원', better: 'up' },
+    { key: 'rnd', step: 1, label: '연구개발비', unit: '억원', better: 'up' },
+    { key: 'rnd_ratio', step: 1, label: '연구개발비 ÷ 매출', unit: '%', better: 'flat' },
+    { key: 'researchers', step: 1, label: '연구인력', unit: '명', better: 'up' },
+    { key: 'patents', step: 1, label: '등록 특허', unit: '건', better: 'up' },
     { key: 'rev', step: 2, label: '매출액', unit: '억원', better: 'up' },
     { key: 'gp', step: 2, label: '매출총이익', unit: '억원', better: 'up' },
     { key: 'gpm', step: 2, label: '매출총이익률', unit: '%', better: 'up' },
@@ -61,6 +65,7 @@
     { key: 'ebitda', step: 2, label: 'EBITDA(영업이익 + 감가상각비)', unit: '억원', better: 'up' },
     { key: 'ebitda_m', step: 2, label: 'EBITDA 마진', unit: '%', better: 'up' },
     { key: 'ni_ctrl', step: 2, label: '지배주주 순이익', unit: '억원', better: 'up' },
+    { key: 'roe', step: 2, label: 'ROE(연환산, 15% 이상이면 좋음)', unit: '%', better: 'up' },
     { key: 'opQ', step: 2, label: '최근 3개월 영업이익', unit: '억원', better: 'up' },
     { key: 'ocf', step: 3, label: '영업활동현금흐름', unit: '억원', better: 'up' },
     { key: 'ocf_ni', step: 3, label: '영업현금흐름 ÷ 순이익', unit: '%', better: 'flat' },
@@ -81,11 +86,11 @@
     { key: 'int_paid', step: 7, label: '이자 지급액', unit: '억원', better: 'down' },
     { key: 'icr', step: 7, label: '이자보상배율(영업이익 ÷ 이자 지급)', unit: '배', better: 'up' },
     { key: 'cash_cover', step: 7, label: '바로 쓸 현금 ÷ 1년 내 갚을 빚', unit: '배', better: 'up' },
+    { key: 'backlog', step: 8, label: '수주잔고', unit: '억원', better: 'up' },
+    { key: 'backlog_x', step: 8, label: '수주잔고 ÷ 누적 매출', unit: '배', better: 'up' },
     { key: 'rev_yoy', step: 8, label: '매출 성장률(1년 전 대비)', unit: '%', better: 'up', noDelta: true },
     { key: 'rev_cagr', step: 8, label: '매출 연평균 성장률(첫 열 대비)', unit: '%', better: 'up', noDelta: true },
-    { key: 'ni_cagr', step: 8, label: '지배주주 순이익 연평균 성장률(첫 열 대비)', unit: '%', better: 'up', noDelta: true },
-    { key: 'backlog', step: 8, label: '수주잔고', unit: '억원', better: 'up' },
-    { key: 'backlog_x', step: 8, label: '수주잔고 ÷ 누적 매출', unit: '배', better: 'up' }
+    { key: 'ni_cagr', step: 8, label: '지배주주 순이익 연평균 성장률(첫 열 대비)', unit: '%', better: 'up', noDelta: true }
   ];
 
   const STEPS = [
@@ -123,12 +128,29 @@
     if (ppe || intg) v.capex = { v: (ppe ? ppe.v : 0) + (intg ? intg.v : 0), src: [ppe && ppe.src, intg && intg.src].filter(Boolean).join(' / ') };
     ['cash', 'st_fin', 'lt_fin', 'receivables', 'inventory', 'contract_liab', 'debt_1y', 'debt_total', 'liab', 'equity', 'equity_ctrl', 'capital'].forEach(k => take(k, bs));
     if (rep.da && rep.da[which]) v.da = { v: rep.da[which].v, src: rep.da[which].src };
+    // 사업 내용 표(제품별 매출·연구개발비): 사업보고서는 연도 열이 있어 전기·전전기도 씀
+    const annual = rep.meta && rep.meta.type === '사업보고서';
+    const idx = which === 'cur' ? 0 : (annual ? (which === 'prev' ? 1 : 2) : -1);
+    if (idx >= 0 && rep.rnd && rep.rnd.amounts[idx] !== undefined) v.rnd = { v: rep.rnd.amounts[idx], src: rep.rnd.src };
+    if (which === 'cur') {
+      if (rep.researchers) v.researchers = { v: rep.researchers.v, src: rep.researchers.src };
+      if (rep.patents) v.patents = { v: rep.patents.v, src: rep.patents.src };
+    }
     if (!isPrev) {
       if (rep.backlog) v.backlog = { v: rep.backlog.v, src: rep.backlog.src };
       if (rep.shares) v.shares = { v: rep.shares.v, src: rep.shares.src };
     }
     // 회계 숫자가 없는 '없음' 항목은 0으로 둡니다(계약부채, 배당 등은 없을 수 있음).
     return v;
+  }
+
+  function bizOf(rep, which) {
+    const annual = rep.meta && rep.meta.type === '사업보고서';
+    const idx = which === 'cur' ? 0 : (annual ? (which === 'prev' ? 1 : 2) : -1);
+    const products = [];
+    if (idx >= 0 && rep.products) for (const p of rep.products) if (p.amounts[idx] !== undefined) products.push({ name: p.name, v: p.amounts[idx] });
+    const segBlock = rep.segments ? (which === 'cur' ? rep.segments.cur : which === 'prev' ? rep.segments.prev : null) : null;
+    return { products, segments: segBlock ? segBlock.map(x => ({ name: x.name, rev: x.rev, op: x.op })) : [] };
   }
 
   // 사업보고서: 보고서 1개에 3개 연도가 들어 있어 연도별 열로 펼칩니다(겹치면 최신 보고서 숫자 사용).
@@ -141,7 +163,11 @@
         const base = columnFromReport(r, which);
         const n = Object.keys(base).filter(k => !['backlog', 'shares'].includes(k)).length;
         if (n < 5) return;
+        const older = byYear.get(yy);
+        // 같은 연도가 겹치면 최신 보고서 숫자를 쓰되, 최신 보고서에 없는 항목(수주잔고·연구인력 등)은 이전 보고서에서 채웁니다.
+        if (older) for (const [k, val] of Object.entries(older.base)) if (!base[k]) base[k] = val;
         byYear.set(yy, {
+          fallback: older ? { rep: older.rep, which: older.which } : null,
           id: 'Y' + yy, reportId: r.id, derived: which !== 'cur', which,
           label: `${yy}년`, type: '사업보고서', end: { y: yy, m: 12, d: 31 },
           base, rep: r,
@@ -235,6 +261,11 @@
     if (opForCash !== null && g('int_paid')) set('icr', opForCash / g('int_paid'));
     if (g('debt_1y')) set('cash_cover', liquid / g('debt_1y'));
     const revCum = g('rev_cum') !== null ? g('rev_cum') : rev;
+    if (g('rnd') !== null && revCum) set('rnd_ratio', g('rnd') / revCum * 100);
+    if (g('ni_ctrl') !== null && g('equity_ctrl')) {
+      const months = col.quarter ? 3 : (col.end ? col.end.m : 12);
+      set('roe', g('ni_ctrl') * (12 / months) / g('equity_ctrl') * 100);
+    }
     if (g('backlog') !== null && revCum) set('backlog_x', g('backlog') / revCum);
     // 상각비는 누적 숫자라 누적 영업이익과 더합니다(분기 탭에서는 누적 EBITDA).
     if (opForCash !== null && g('da') !== null) { set('ebitda', opForCash + g('da')); if (revCum) set('ebitda_m', (opForCash + g('da')) / revCum * 100); }
@@ -289,13 +320,62 @@
   }
   const pct = (a, b) => (a && b !== null && b !== undefined) ? (b / a - 1) * 100 : null;
 
+  // ---------- 문장 만들기 ----------
+  function josa(word, withFinal, noFinal) {
+    const ch = word.trim().slice(-1);
+    if (/[가-힣]/.test(ch)) return (ch.charCodeAt(0) - 0xAC00) % 28 ? withFinal : noFinal;
+    if (/[0-9]/.test(ch)) return '013678'.includes(ch) ? withFinal : noFinal;
+    return /[lmnLMN]$/.test(ch) ? withFinal : noFinal;
+  }
+  // stem: '수주잔고가 늘' → 이어질 때 '늘고', 끝날 때 '늘었습니다', 반대 내용이 뒤따를 때 '늘었지만'
+  function clause(stem, conn, past, done) {
+    if (done) return { c: stem + conn, f: stem + '습니다', s: stem + '지만' };
+    return { c: stem + past + conn, f: stem + past + '습니다', s: stem + past + '지만' };
+  }
+  function compose(pos, neg) {
+    const out = [];
+    pos.forEach((p, i) => out.push(i < pos.length - 1 ? p.c : (neg.length ? (p.s || p.f) : p.f)));
+    neg.forEach((p, i) => out.push(i < neg.length - 1 ? p.c : p.f));
+    return out.join(', ') + '.';
+  }
+
   // ---------- 판정 ----------
   function verdicts(D, cols, val9) {
     const ci = compareIndex(cols);
     const L = D[D.length - 1] || {}, P = ci >= 0 ? D[ci] : {};
     const out = {};
     const v = (k, s, why) => { out[k] = { verdict: s, why }; };
-    v(1, '직접 확인', '사업 개요를 읽고, 고객이 이 회사를 고르는 이유와 대체하기 어려운 이유를 직접 적어 보세요.');
+    // 1 사업 이해: 제품별 매출과 연구개발
+    {
+      const n = cols.length, ci = compareIndex(cols);
+      const prods = bizRows(cols, 'products').filter(r => r.vals[n - 1] !== undefined);
+      const ph = [];
+      let lead = null, lag = null;
+      if (ci >= 0) for (const r of prods) {
+        const a = r.vals[ci], b = r.vals[n - 1];
+        if (a === undefined || b === undefined) continue;
+        if (!lead || b - a > lead.d) lead = { name: r.name, d: b - a };
+        if (!lag || b - a < lag.d) lag = { name: r.name, d: b - a };
+      }
+      const revG = (P.rev && L.rev !== undefined) ? (L.rev / P.rev - 1) * 100 : (L.rev_yoy ?? null);
+      if (lead && lead.d > 0) ph.push(clause(`${lead.name}${josa(lead.name, '이', '가')} 성장을 이끌`, '고', '었'));
+      else if (lag && lag.d < 0) ph.push(clause(`${lag.name} 매출이 줄`, '고', '었'));
+      else if (revG !== null) ph.push(clause(`매출이 ${revG >= 0 ? '늘' : '줄'}`, '고', '었'));
+      if (L.rnd !== undefined && P.rnd !== undefined) {
+        const g = pct(P.rnd, L.rnd);
+        ph.push(g > 5 ? clause('연구개발 투자가 늘', '고', '었') : g < -5 ? clause('연구개발 투자는 줄', '고', '었') : clause('연구개발 투자는 비슷하게 유지됐', '고', '', true));
+      } else if (L.rnd !== undefined) ph.push({ c: `연구개발에 ${fmtNum(L.rnd)}억을 썼고`, f: `연구개발에 ${fmtNum(L.rnd)}억을 썼습니다` });
+      let text = ph.length ? compose(ph, []) : '제품별 매출과 연구개발 숫자를 찾지 못했습니다.';
+      if (L.researchers !== undefined && P.researchers !== undefined && L.researchers !== P.researchers) text += ` 연구인력은 ${P.researchers}명에서 ${L.researchers}명으로 ${L.researchers > P.researchers ? '늘었습니다' : '줄었습니다'}.`;
+      const rndDown = L.rnd !== undefined && P.rnd !== undefined && pct(P.rnd, L.rnd) < -10;
+      let verdict;
+      if (revG === null && !prods.length) verdict = '확인 필요';
+      else if (revG !== null && revG < -5) verdict = '주의';
+      else if (revG !== null && revG > 5 && !rndDown) verdict = '개선';
+      else verdict = '양호';
+      if (rndDown && revG > 5) text += ' 매출은 늘었지만 연구개발 투자가 줄어 기술 경쟁력 유지 여부를 지켜볼 필요가 있습니다.';
+      v(1, verdict, text);
+    }
     // 2
     if (L.op === undefined) v(2, '확인 필요', '영업이익을 찾지 못했습니다. 아래 추출값 표에서 입력해 주세요.');
     else if (L.op < 0 && P.op !== undefined && L.op > P.op) v(2, '개선', `영업적자가 ${fmtNum(P.op)}억에서 ${fmtNum(L.op)}억으로 줄었습니다. 아직 흑자 전 단계입니다.`);
@@ -337,19 +417,52 @@
     else if (L.cash_cover !== undefined && L.cash_cover < 1) v(7, '주의', '1년 내 갚을 빚이 바로 쓸 수 있는 현금보다 많습니다.');
     else if (L.icr !== undefined && L.icr < 3) v(7, '주의', `이자보상배율이 ${L.icr.toFixed(1)}배로 낮습니다.`);
     else v(7, '양호', '이자와 단기 빚을 감당할 여력이 있습니다.');
-    // 8
-    if (L.rev_yoy === undefined) v(8, '확인 필요', '1년 전 매출을 찾지 못했습니다.');
-    else if (L.rev_yoy > 10 && (L.backlog === undefined || P.backlog === undefined || L.backlog >= P.backlog)) v(8, '개선', `매출이 1년 전보다 ${L.rev_yoy.toFixed(0)}% 늘었습니다.`);
-    else if (L.rev_yoy >= 0) v(8, '양호', `매출이 1년 전보다 ${L.rev_yoy.toFixed(0)}% 늘었습니다.`);
-    else v(8, '주의', `매출이 1년 전보다 ${Math.abs(L.rev_yoy).toFixed(0)}% 줄었습니다.`);
+    // 8 장기 성장성: 수주잔고, 부문(자회사·사업부)별 영업이익
+    {
+      const ci = compareIndex(cols);
+      const n = cols.length;
+      const pos = [], neg = [], notes = [];
+      if (L.backlog !== undefined && P.backlog !== undefined) {
+        const g = pct(P.backlog, L.backlog);
+        if (g > 5) pos.push(clause('수주잔고가 늘', '고', '었')); else if (g < -10) neg.push(clause('수주잔고가 줄', '고', '었'));
+        const k1 = (cols[n - 1].base.backlog && cols[n - 1].base.backlog.src || '').split(/\s{2,}/)[0];
+        const k0 = ci >= 0 && cols[ci].base.backlog ? (cols[ci].base.backlog.src || '').split(/\s{2,}/)[0] : k1;
+        if (k1 && k0 && k1.replace(/[\d\s]/g, '') !== k0.replace(/[\d\s]/g, '')) notes.push('수주잔고 공시 기준이 바뀐 점도 감안하세요.');
+      }
+      if (L.rev_yoy !== undefined) {
+        if (L.rev_yoy > 10) pos.push(clause(`매출이 1년 전보다 ${L.rev_yoy.toFixed(0)}% 늘`, '고', '었'));
+        else if (L.rev_yoy < 0) neg.push(clause(`매출이 1년 전보다 ${Math.abs(L.rev_yoy).toFixed(0)}% 줄`, '고', '었'));
+      }
+      if (ci >= 0) {
+        const segs = bizRows(cols, 'segments', 'op').filter(r => r.vals[ci] !== undefined && r.vals[n - 1] !== undefined && Math.max(Math.abs(r.vals[ci]), Math.abs(r.vals[n - 1])) >= 1);
+        let lead = null;
+        for (const r of segs) { const d = r.vals[n - 1] - r.vals[ci]; if (d > 0 && (!lead || d > lead.d)) lead = { name: r.name, d }; }
+        if (lead && segs.length > 1) {
+          const cur = segs.find(r => r.name === lead.name).vals[n - 1];
+          pos.push(cur < 0 ? clause(`${lead.name}${josa(lead.name, '은', '는')} 적자를 크게 줄`, '고', '였') : clause(`${lead.name}${josa(lead.name, '이', '가')} 성장을 이끌`, '고', '었'));
+        }
+        for (const r of segs) {
+          const a = r.vals[ci], b = r.vals[n - 1];
+          if (a > 0 && b < 0) neg.push({ c: `${r.name}${josa(r.name, '은', '는')} 적자로 돌아섰고`, f: `${r.name}${josa(r.name, '은', '는')} 적자로 돌아섰습니다` });
+          else if (a < 0 && b < a * 1.2 && b < -1) neg.push({ c: `${r.name}${josa(r.name, '은', '는')} 적자가 커졌고`, f: `${r.name}${josa(r.name, '은', '는')} 적자가 커졌습니다` });
+        }
+      }
+      let text = (pos.length || neg.length) ? compose(pos, neg) : (L.rev_yoy !== undefined ? '매출이 1년 전과 비슷합니다.' : '성장성을 판단할 숫자를 찾지 못했습니다.');
+      if (notes.length) text += ' ' + notes.join(' ');
+      let verdict;
+      if (!pos.length && !neg.length) verdict = L.rev_yoy === undefined ? '확인 필요' : '양호';
+      else if (!neg.length) verdict = '개선';
+      else if (pos.length >= neg.length) verdict = '양호';
+      else verdict = '주의';
+      v(8, verdict, text);
+    }
     // 9
     if (!val9 || !val9.mcap) v(9, '입력 필요', '주가와 발행주식수를 입력하면 계산됩니다.');
     else if (!(val9.ttm_ni_ctrl > 0)) v(9, '부담', '최근 12개월 순이익이 적자라 PER·PEG로 평가할 수 없습니다. PBR, PSR, EV/EBITDA로 흑자 전환 기대가 얼마나 반영돼 있는지 보세요.');
     else {
       const per = val9.per, peg = val9.peg;
       const pegTxt = peg !== undefined ? `, PEG ${peg.toFixed(2)}` : '';
-      if (peg !== undefined && peg < 1 && per < 40) v(9, '낮은 편', `PER ${per.toFixed(1)}배${pegTxt}로 성장률에 비해 낮은 편입니다. 성장률이 이어질 수 있는지 확인하세요.`);
-      else if (peg !== undefined && peg < 1) v(9, '보통', `PER ${per.toFixed(1)}배로 높지만, 넣은 성장률(${val9.growth.toFixed(0)}%) 기준 PEG는 ${peg.toFixed(2)}입니다. 그 성장률이 앞으로도 이어질지가 관건입니다.`);
+      if (peg !== undefined && peg < 1) v(9, '저평가', `PEG ${peg.toFixed(2)}로 1보다 낮아 성장률(${val9.growth.toFixed(0)}%)에 비해 저평가입니다(PER ${per.toFixed(1)}배). 그 성장률이 앞으로도 이어질지 확인하세요.`);
       else if (per > 40 || (peg !== undefined && peg > 2)) v(9, '부담', `PER ${per.toFixed(1)}배${pegTxt}로 높은 성장 기대가 반영돼 있습니다.`);
       else if (per > 20) v(9, '보통', `PER ${per.toFixed(1)}배${pegTxt}입니다. 성장률과 비교해 판단하세요.`);
       else v(9, '낮은 편', `PER ${per.toFixed(1)}배${pegTxt}로 이익에 비해 낮은 편입니다. 이익이 일회성은 아닌지 확인하세요.`);
@@ -559,11 +672,20 @@
       if (inp.ttm_op > 0) r.ev_op = ev / inp.ttm_op;
       r.ttm_ni_ctrl = inp.ttm_ni_ctrl; r.growth = inp.growth;
     }
+    if (inp.ttm_ni_ctrl !== null && inp.ttm_ni_ctrl !== undefined && inp.equity_ctrl > 0) r.roe = inp.ttm_ni_ctrl / inp.equity_ctrl * 100;
     return r;
   }
 
   function analyze(reports, overrides, mode) {
     const cols = buildColumns(reports, mode);
+    for (const c of cols) {
+      c.biz = bizOf(c.rep, c.which || (c.derived ? 'prev' : 'cur'));
+      if (c.fallback) {
+        const fb = bizOf(c.fallback.rep, c.fallback.which);
+        if (!c.biz.products.length) c.biz.products = fb.products;
+        if (!c.biz.segments.length) c.biz.segments = fb.segments;
+      }
+    }
     const resolved = cols.map(c => resolve(c, overrides));
     const D = cols.map((c, i) => derive(resolved[i], c, reports));
     // 사업보고서: 전년 대비 성장률은 바로 앞 연도 열로 계산
@@ -588,5 +710,27 @@
     return { cols, resolved, D };
   }
 
-  return { BASE, METRICS, STEPS, analyze, compareIndex, verdicts, insights, checklist, valuationDefaults, valuationCalc, changeText, tone, fmtNum };
+  // 이름이 한 글자 다른 경우(보고서 오타 등)도 같은 항목으로 봅니다.
+  function sameName(a, b) {
+    const x = a.replace(/\s/g, '').toLowerCase(), y = b.replace(/\s/g, '').toLowerCase();
+    if (x === y) return true;
+    if (x.length !== y.length || x.length < 4) return false;
+    let diff = 0; for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) diff++;
+    return diff <= 1;
+  }
+  // 열별 제품·부문 숫자를 같은 이름끼리 모은 행
+  function bizRows(cols, kind, field) {
+    const rows = [];
+    cols.forEach((c, ci) => {
+      for (const it of (c.biz ? c.biz[kind] : [])) {
+        let r = rows.find(x => sameName(x.name, it.name));
+        if (!r) { r = { name: it.name, vals: cols.map(() => undefined) }; rows.push(r); }
+        else r.name = it.name; // 최신 보고서의 이름을 씁니다(보고서 오타 대비)
+        r.vals[ci] = field ? it[field] : it.v;
+      }
+    });
+    return rows;
+  }
+
+  return { BASE, METRICS, STEPS, analyze, compareIndex, bizRows, sameName, verdicts, insights, checklist, valuationDefaults, valuationCalc, changeText, tone, fmtNum };
 });

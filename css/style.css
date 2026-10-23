@@ -170,6 +170,13 @@ textarea { width: 100%; margin-top: 6px; resize: vertical; line-height: 1.5; }
 .val-top { justify-content: flex-start; }
 .val-top .btn { margin-left: auto; }
 
+.badge { display: inline-block; font-size: .72rem; font-weight: 700; padding: 0 6px; border-radius: 4px; margin-left: 6px; vertical-align: 1px; font-family: var(--sans); }
+.badge.good { color: var(--good); background: var(--good-bg); border: 1px solid var(--good); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.vcard.flag { border-color: var(--good); }
+.overview-wrap { margin-top: 12px; }
+.overview-wrap summary { cursor: pointer; color: var(--accent); font-size: .9rem; font-weight: 600; }
+.overview-wrap .overview { margin-top: 8px; }
+
 /* 알아두면 좋은 점 */
 .insights { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .ins { border-left: 4px solid var(--manual); padding: 8px 14px; background: var(--manual-bg); border-radius: 0 8px 8px 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }

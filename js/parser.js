@@ -386,6 +386,240 @@
     return null;
   }
 
+  // ---------- 사업 내용: 제품별 매출, 연구개발비, 연구인력, 특허 ----------
+  // 금액 열만 남기고(%는 버림) 앞쪽 글자를 이름으로 씁니다.
+  function amountsRow(line) {
+    const toks = line.trim().split(/\s+/);
+    let first = -1;
+    const nums = [];
+    toks.forEach((t, i) => {
+      if (/%$/.test(t)) { if (first < 0) first = i; return; }
+      if (t === '-' && i > 0) { if (first < 0) first = i; nums.push(0); return; }
+      if (NUM_RE.test(t)) {
+        if (first < 0) first = i;
+        const neg = t.startsWith('(') || t.startsWith('-');
+        nums.push((neg ? -1 : 1) * parseFloat(t.replace(/[(),\-]/g, '')));
+      }
+    });
+    const label = (first < 0 ? toks : toks.slice(0, first)).join(' ');
+    return { label, nums };
+  }
+  const isHeading = (n) => /^([가-하]\.|\d+\)|\d+\.|\(\d+\))/.test(n);
+  // 표 머리글의 연도 순서(예: 2022년 2023년 2024년)를 읽어, 최신 연도가 맨 앞이 되도록 맞춥니다.
+  function yearOrder(lines, from, to) {
+    const ys = [];
+    for (let j = from; j < to; j++) {
+      const m = lines[j].match(/(20\d{2})\s*년/g);
+      if (m && m.length >= 2) { m.forEach(x => ys.push(+x.slice(0, 4))); break; }
+    }
+    return ys;
+  }
+  function orderAmounts(nums, ys) {
+    if (ys.length < 2) return nums;
+    const a = nums.slice(0, ys.length);
+    return ys[0] < ys[ys.length - 1] ? a.reverse() : a;
+  }
+
+  function parseProducts(lines) {
+    for (let i = 0; i < lines.length; i++) {
+      const n = norm(lines[i]);
+      if (!/주요제품(등|및서비스)?의?(현황|매출)$/.test(n) || /\.{5,}/.test(lines[i])) continue;
+      const unit = findUnit(lines, i, 6);
+      if (!unit) continue;
+      const rows = [];
+      const ys = yearOrder(lines, i + 1, i + 8);
+      for (let j = i + 1; j < Math.min(lines.length, i + 40); j++) {
+        if (isPageNoise(lines[j])) continue;
+        const nj = norm(lines[j]);
+        if (/^(합계|총계)/.test(nj) || /^\(?주\d?\)/.test(nj) || (isHeading(nj) && j > i + 2)) break;
+        const r = amountsRow(lines[j]);
+        if (!r.nums.length || !r.nums.some(v => Math.abs(v) > 0)) continue;
+        let label = r.label.replace(/^[-–·\s]+/, '').replace(/\s+-$/, '');
+        const comma = label.search(/\S+,/);
+        if (comma > 0) label = label.slice(0, comma);
+        label = label.replace(/\s+/g, ' ').trim();
+        if (!label || /단위|기준일|금액|비율|^\d{4}년/.test(label)) continue;
+        if (label.length > 22) label = label.slice(0, 21) + '…';
+        rows.push({ name: label, amounts: orderAmounts(r.nums, ys).map(v => v * unit), src: lines[j].trim() });
+      }
+      if (rows.length) return rows;
+    }
+    return null;
+  }
+
+  function parseRnd(lines) {
+    for (let i = 0; i < lines.length; i++) {
+      const n = norm(lines[i]);
+      if (!/연구개발비(용)?(의?현황)?$/.test(n) || /\.{5,}/.test(lines[i]) || n.length > 20) continue;
+      const unit = findUnit(lines, i, 14);
+      if (!unit) continue;
+      const ys = yearOrder(lines, i + 1, i + 14);
+      for (let j = i + 1; j < Math.min(lines.length, i + 30); j++) {
+        if (isPageNoise(lines[j])) continue;
+        const nj = clean(norm(lines[j]));
+        const r = amountsRow(lines[j]);
+        if (!r.nums.length) continue;
+        const L = clean(norm(r.label));
+        if (/^(합계|총계)$/.test(L) || /총계$/.test(L) || /^연구개발비(용)?(합계|계|총계)$/.test(L)) {
+          return { amounts: (ys.length >= 2 && ys[0] < ys[ys.length - 1] ? orderAmounts(r.nums, ys) : r.nums).map(v => v * unit), src: lines[j].trim() };
+        }
+        if (j > i + 3 && isHeading(nj) && !r.nums.length) break;
+      }
+    }
+    return null;
+  }
+
+  function parseResearchers(lines) {
+    for (const s of lines) {
+      const m = s.match(/(\d[\d,]*)\s*명의?\s*(전문\s*)?연구(인력|원|개발\s*인력)/) || s.match(/연구(인력|원)[^\d]{0,15}(\d[\d,]*)\s*명/);
+      if (m) {
+        const v = parseInt((m[1].match(/\d/) ? m[1] : m[2]).replace(/,/g, ''), 10);
+        if (v > 0 && v < 100000) return { v, src: s.trim() };
+      }
+    }
+    return null;
+  }
+  function parsePatents(lines) {
+    for (const s of lines) {
+      const m = s.match(/총\s*([\d,]+)\s*건[^.。]{0,40}특허/) || s.match(/특허[^.。]{0,30}총\s*([\d,]+)\s*건/);
+      if (m) return { v: parseInt(m[1].replace(/,/g, ''), 10), src: s.trim() };
+    }
+    return null;
+  }
+
+  // ---------- 영업부문(자회사·사업부별) 매출과 영업이익 ----------
+  const segName = (s) => s.replace(/\(주\)|㈜|주식회사/g, '').replace(/\s+/g, ' ').trim();
+  function parseSegments(lines) {
+    const items = lines.items || null;
+    let start = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const n = norm(lines[i]);
+      if (/\.{5,}/.test(lines[i])) continue;
+      if (/영업부문(정보|에대한공시|별정보)/.test(n) && /단위/.test(lines.slice(i, i + 10).join(' '))) { start = i; break; }
+    }
+    if (start < 0) return null;
+    const unit = findUnit(lines, start, 10) || 1e-8;
+    const end = Math.min(lines.length, start + 90);
+    const isRev = (L) => /^(영업수익|매출액|수익|매출)$/.test(L);
+    const isOp = (L) => /^(영업손익|영업이익|영업손실|부문손익|부문이익)$/.test(L);
+    // (1) 세로형: 머리글 줄에 '매출액'과 '영업손익'이 함께 있음
+    for (let i = start; i < end; i++) {
+      const hn = norm(lines[i]);
+      if (splitRow(lines[i]).nums.length) continue;
+      if (!/(매출액|영업수익)/.test(hn) || !/(영업손익|영업이익)/.test(hn)) continue;
+      if (/다\.$/.test(lines[i].trim()) || hn.length > 60) continue;
+      const head = lines[i].trim().split(/\s{2,}/).map(norm).filter(t => t && !/^(구|분|구분)$/.test(t));
+      if (head.length < 2) continue;
+      const ri = head.findIndex(t => /매출액|영업수익/.test(t)), oi = head.findIndex(t => /영업손익|영업이익/.test(t));
+      if (ri < 0 || oi < 0) continue;
+      const blocks = [];
+      let k = i;
+      while (k < end && blocks.length < 2) {
+        const out = [];
+        let pending = [], lastWrapped = null;
+        let j = k + 1;
+        for (; j < end; j++) {
+          if (isPageNoise(lines[j])) continue;
+          const r = splitRow(lines[j]);
+          const L = norm(r.label);
+          if (/^(소계|합계|내부거래|조정|연결|계)/.test(L) && r.nums.length) break;
+          if (!r.nums.length) {
+            if (/(매출액|영업수익)/.test(norm(lines[j])) && /(영업손익|영업이익)/.test(norm(lines[j]))) break;
+            if (/^\(\d\)|^[가-하]\.|^\d+\./.test(norm(lines[j])) && out.length) break;
+            if (/단위|당기|전기|반기|분기|당기말|기말/.test(norm(lines[j])) && norm(lines[j]).length < 30) continue;
+            pending.push(lines[j].trim());
+            continue;
+          }
+          let name = r.label;
+          if (!name) {
+            if (lastWrapped && pending.length > 1) lastWrapped.name += ' ' + pending.shift();
+            name = pending.join(' ');
+          }
+          pending = [];
+          const row = { name: segName(name), rev: (r.nums[ri] || 0) * unit, op: (r.nums[oi] || 0) * unit };
+          if (!r.label) lastWrapped = row; else lastWrapped = null;
+          out.push(row);
+        }
+        if (lastWrapped && pending.length) lastWrapped.name += ' ' + pending.join(' ');
+        if (out.length) blocks.push(out);
+        // 다음 머리글(전기) 찾기
+        k = j;
+        let next = -1;
+        for (let t = j + 1; t < Math.min(end, j + 25); t++) {
+          const tn = norm(lines[t]);
+          if (!splitRow(lines[t]).nums.length && /(매출액|영업수익)/.test(tn) && /(영업손익|영업이익)/.test(tn)) { next = t; break; }
+        }
+        if (next < 0) break;
+        k = next;
+      }
+      if (blocks.length) return { cur: blocks[0], prev: blocks[1] || null, src: '주석의 영업부문 정보' };
+    }
+    // (2) 가로형: '영업수익' 줄에 부문별 숫자가 옆으로 나열됨 → 부문 합계와 맞는 앞쪽 열을 부문으로 봄
+    const blocks = [];
+    let i = start;
+    while (i < end && blocks.length < 2) {
+      let r1 = -1, r2 = -1;
+      for (let t = i; t < end; t++) { const r = splitRow(lines[t]); if (r.nums.length >= 2 && isRev(clean(norm(r.label)))) { r1 = t; break; } }
+      if (r1 < 0) break;
+      for (let t = r1 + 1; t < Math.min(end, r1 + 6); t++) { const r = splitRow(lines[t]); if (r.nums.length >= 2 && isOp(clean(norm(r.label)))) { r2 = t; break; } }
+      if (r2 < 0) break;
+      const revN = splitRow(lines[r1]).nums, opN = splitRow(lines[r2]).nums;
+      const groups = [];
+      let from = 0;
+      while (from < revN.length) {
+        let k = -1, acc = 0;
+        for (let c = from; c < revN.length - 1; c++) {
+          acc += revN[c];
+          if (c > from && Math.abs(acc - revN[c + 1]) <= Math.max(2, Math.abs(revN[c + 1]) * 0.001)) { k = c + 1; break; }
+        }
+        if (k < 0) break;
+        groups.push([from, k]);
+        from = k + 1;
+        while (from < revN.length && Math.abs(revN[from]) > 0 && groups.length && false) from++;
+      }
+      if (!groups.length) break;
+      // 머리글 이름: 숫자 조각의 x 위치에 가장 가까운 머리글 글자를 모읍니다.
+      const names = [];
+      if (items && items[r1]) {
+        const numItems = items[r1].filter(it => /^\(?-?\d[\d,]*\)?$|^-$/.test(it.s.trim()));
+        // 숫자는 열의 오른쪽 끝에, 머리글은 왼쪽 끝에 맞춰져 있어 '오른쪽 끝' 구간으로 열을 나눕니다.
+        const rights = numItems.map(it => it.x + it.w);
+        const cols = rights.map(() => []);
+        let h0 = r1 - 1;
+        while (h0 > i && h0 > r1 - 12 && !/단위/.test(lines[h0])) h0--;
+        for (let t = h0 + 1; t < r1; t++) {
+          for (const it of (items[t] || [])) {
+            const txt = it.s.trim();
+            if (!txt) continue;
+            const best = rights.findIndex(rx => rx >= it.x + 2);
+            if (best >= 0) cols[best].push(txt);
+          }
+        }
+        cols.forEach((parts) => {
+          let nm = '';
+          for (const p of parts) {
+            if (/^(부문|부문의|합계|합|계|영업부문|중요한|조정사항|기업|전체|총계|부문의 합계|중요한 조정사항|기업 전체 총계|당반기|전반기|당기|전기|당분기|전분기|구분|구 분|구|분)$/.test(p)) continue;
+            nm += (nm && /[A-Za-z0-9]$/.test(nm) && /^[A-Za-z0-9]/.test(p)) ? ' ' + p : p;
+          }
+          names.push(segName(nm.replace(/\(?단위[^)]*\)?/g, '').replace(/^[^가-힣A-Za-z]*(천원|백만원|원)?\)?\.?/, '')));
+        });
+      }
+      const [g0, gk] = groups[0];
+      const mk = (a, b) => {
+        const out = [];
+        for (let c = a; c < b; c++) out.push({ name: names[c] || `부문 ${c - a + 1}`, rev: revN[c] * unit, op: (opN[c] || 0) * unit });
+        return out;
+      };
+      blocks.push(mk(g0, gk));
+      if (groups[1] && blocks.length < 2) blocks.push(mk(groups[1][0], groups[1][1]).map((r, idx) => ({ ...r, name: blocks[0][idx] ? blocks[0][idx].name : r.name })));
+      i = r2 + 1;
+    }
+    if (!blocks.length) return null;
+    // 같은 머리글이 반복된 이전 블록 이름을 다음 블록에도 씁니다.
+    if (blocks[1] && blocks[1].length === blocks[0].length) blocks[1] = blocks[1].map((r, idx) => ({ ...r, name: /^부문 \d+$/.test(r.name) ? blocks[0][idx].name : r.name }));
+    return { cur: blocks[0], prev: blocks[1] || null, src: '주석의 영업부문 정보' };
+  }
+
   function parseReport(lines) {
     const meta = parseMeta(lines);
     meta.ticker = parseTicker(lines);
@@ -401,6 +635,11 @@
       shares: parseShares(lines),
       backlog: parseBacklog(lines),
       da: parseDA(lines),
+      products: parseProducts(lines),
+      rnd: parseRnd(lines),
+      researchers: parseResearchers(lines),
+      patents: parsePatents(lines),
+      segments: parseSegments(lines),
       overview: parseOverview(lines)
     };
   }
