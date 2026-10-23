@@ -208,7 +208,14 @@
   let last = null;
   function compute() {
     const { cols, resolved, D } = A.analyze(state.reports, state.overrides, mode);
-    const vDef = A.valuationDefaults(cols, D, mode);
+    // 반기·분기 탭: 사업보고서 탭에 같은 회사의 직전 사업연도 보고서가 있으면 12개월 숫자 계산에 씁니다.
+    let fy = null;
+    if (mode !== 'annual') {
+      const latest = cols[cols.length - 1].rep;
+      const cname = (x) => (x || '').replace(/\s|\(주\)|㈜|주식회사/g, '');
+      fy = states.annual.reports.find(r => latest.meta.end && r.meta.end && r.meta.end.y === latest.meta.end.y - 1 && cname(r.meta.company) === cname(latest.meta.company)) || null;
+    }
+    const vDef = A.valuationDefaults(cols, D, mode, fy);
     vDef.ticker = currentTicker(cols);
     vDef.price = null;
     const vIn = valuationInputs(vDef);
@@ -301,6 +308,17 @@
     );
   }
 
+  // 비고: 단계별로 꼭 알아야 할 점(일회성 이익 등). 핵심 문장은 굵게, 나머지는 제목만.
+  function remarkNodes(R, step) {
+    const its = (R.insights || []).filter(i => i.step === step);
+    if (!its.length) return [];
+    const keys = its.filter(i => i.key && i.short).sort((a, b) => (/^비교 기준/.test(a.title) ? 1 : 0) - (/^비교 기준/.test(b.title) ? 1 : 0));
+    const others = its.filter(i => !(i.key && i.short));
+    return [
+      ...keys.map(i => h('p', { class: 'remark key', text: i.short })),
+      others.length ? h('p', { class: 'remark', text: others.map(i => i.title).join(' · ') }) : null
+    ];
+  }
   function scorecard(R) {
     const rows = A.STEPS.map(s => {
       const v = R.verdicts[s.step];
@@ -308,14 +326,15 @@
         h('td', { class: 'sc-num', text: String(s.step) }),
         h('th', { scope: 'row' }, h('a', { href: '#step-' + s.step, text: s.name, onclick: (e) => { e.preventDefault(); const t = $('#step-' + s.step); if (t) t.scrollIntoView({ behavior: 'smooth' }); } }), h('span', { class: 'sc-q', text: s.question })),
         h('td', { class: 'sc-verdict' }, chip(v.verdict)),
-        h('td', { class: 'sc-why', text: v.why })
+        h('td', { class: 'sc-why', text: v.why }),
+        h('td', { class: 'sc-note' }, remarkNodes(R, s.step))
       );
     });
     return h('section', { class: 'block', id: 'scorecard' },
       h('h2', { text: '9단계 판정표' }),
       h('div', { class: 'table-scroll' },
         h('table', { class: 'scoretable' },
-          h('thead', null, h('tr', null, h('th', { scope: 'col', text: '단계' }), h('th', { scope: 'col', text: '항목과 핵심 질문' }), h('th', { scope: 'col', text: '판정' }), h('th', { scope: 'col', text: '이유' }))),
+          h('thead', null, h('tr', null, h('th', { scope: 'col', text: '단계' }), h('th', { scope: 'col', text: '항목과 핵심 질문' }), h('th', { scope: 'col', text: '판정' }), h('th', { scope: 'col', text: '이유' }), h('th', { scope: 'col', text: '비고' }))),
           h('tbody', null, rows)
         )
       )
@@ -441,6 +460,10 @@
     );
     const why = h('p', { class: 'step-why', id: 'why-' + s.step, text: v.why });
     const body = [];
+    const stepIns = (R.insights || []).filter(i => i.step === s.step);
+    if (stepIns.length) body.push(h('div', { class: 'remark-box' },
+      h('strong', { text: '비고' }),
+      h('ul', null, stepIns.map(i => h('li', { class: i.key ? 'key' : '' }, h('b', { text: i.title }), ' ', i.body)))));
     if (s.step === 1) {
       const latest = R.cols[R.cols.length - 1];
       body.push(metricTable(1, R));

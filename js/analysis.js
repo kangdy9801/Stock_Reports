@@ -477,6 +477,47 @@
     return out;
   }
 
+  // ---------- 순이익의 질: 일회성 손익이 순이익을 얼마나 바꿨나 ----------
+  const ONE_OFF = /처분이익|처분손실|손상|합병|평가이익|평가손실|사채상환|재해|중단|보험금|환입|매각/;
+  function profitNote(ci, D, cols) {
+    const c = cols[ci], d = D[ci];
+    if (!c || !d || d.ni === undefined || d.op === undefined) return null;
+    const gap = d.ni - d.op;
+    if (!(Math.abs(gap) > Math.max(10, Math.abs(d.op) * 0.3))) return null;
+    if (c.quarter && !(c.end && c.end.m === 3)) return null; // 3분기는 손익(분기)과 주석(누적) 기간이 달라 생략
+    // 이 열의 주석 숫자: 보고서의 당기(v) 또는 전기(pv)
+    let items = null;
+    const fb = c.fallback && c.fallback.which === 'cur' ? c.fallback.rep : null;
+    if (fb && fb.noteItems) items = [...(fb.noteItems.fin || []), ...(fb.noteItems.oth || [])].map(x => ({ ...x, val: x.v }));
+    else if (c.rep && c.rep.noteItems) {
+      const usePrev = c.derived || c.which === 'prev';
+      if (c.which !== 'prev2') items = [...(c.rep.noteItems.fin || []), ...(c.rep.noteItems.oth || [])].map(x => ({ ...x, val: usePrev ? x.pv : x.v }));
+    }
+    const f = fmtNum;
+    const sg = (x) => (x >= 0 ? '+' : '−') + f(Math.abs(x)) + '억';
+    const fin = (d.fin_inc || 0) - (d.fin_cost || 0), oth = (d.oth_inc || 0) - (d.oth_exp || 0);
+    let gains = [], losses = [];
+    if (items) {
+      const big = items.filter(x => x.val && x.val >= Math.max(5, Math.abs(gap) * 0.15) && ONE_OFF.test(x.name) && !/포함|합계|금융(수익|비용|원가)|기타(수익|비용)/.test(x.name.replace(/\s/g, ''))).sort((a, b) => b.val - a.val);
+      gains = big.filter(x => x.kind !== 'cost').slice(0, 2);
+      losses = big.filter(x => x.kind === 'cost').slice(0, 2);
+    }
+    const list = (arr, sign) => arr.map(x => `${x.name} ${sign}${f(x.val)}억`).join(', ');
+    const gSum = gains.reduce((a, x) => a + x.val, 0), lSum = losses.reduce((a, x) => a + x.val, 0);
+    let short, extra = '';
+    if (gap > 0 && gains.length && gSum >= gap * 0.4) {
+      short = `${c.label} 순이익 ${f(d.ni)}억은 ${list(gains, '+')}(일회성) 덕분이고, 본업 영업이익은 ${f(d.op)}억 수준입니다.`;
+      if (losses.length) extra = ` 일회성 비용(${list(losses, '−')})도 함께 반영된 숫자입니다.`;
+    } else if (gap < 0 && losses.length && lSum >= -gap * 0.4) {
+      short = `${c.label} 순이익 ${f(d.ni)}억은 ${list(losses, '−')}(일회성) 때문에 줄었고, 본업 영업이익은 ${f(d.op)}억입니다.`;
+      if (gains.length) extra = ` 일회성 이익(${list(gains, '+')})도 함께 반영된 숫자입니다.`;
+    } else {
+      short = `${c.label} 순이익 ${f(d.ni)}억에는 본업 밖 손익(금융 ${sg(fin)}, 기타 ${sg(oth)})이 크게 반영돼 있고, 본업 영업이익은 ${f(d.op)}억입니다.`;
+    }
+    const sum = gSum - lSum, once = [...gains, ...losses];
+    return { short, extra, once, sum };
+  }
+
   // ---------- 함께 알아두면 좋은 점 ----------
   function insights(D, cols) {
     const ci = compareIndex(cols);
@@ -485,16 +526,41 @@
     const rep = lc.rep;
     const out = [];
     const f = fmtNum;
-    // 1) 순이익과 영업이익 차이
+    // 0) 순이익의 질(비고): 최신 열과 비교 기준 열
+    const pnL = profitNote(D.length - 1, D, cols);
+    const pnP = ci >= 0 ? profitNote(ci, D, cols) : null;
+    if (pnP) out.push({ tone: 'warn', step: 2, key: true, title: `비교 기준(${cols[ci].label}) 순이익에 주의하세요`, short: pnP.short + ' 그래서 순이익 증감률이 실제 본업 흐름과 다르게 보일 수 있습니다.', body: pnP.short + pnP.extra + ' 이 해를 기준으로 계산한 순이익 증감률은 본업 흐름과 다르게 보일 수 있으니 영업이익 증감률을 함께 보세요.' });
+    // 1) 순이익과 영업이익 차이: 영업이익 → 순이익 다리와 주석의 큰 항목
     if (L.ni !== undefined && L.op !== undefined) {
       const gap = L.ni - L.op;
       if (Math.abs(gap) > Math.max(10, Math.abs(L.op) * 0.3)) {
+        const sg = (x) => (x >= 0 ? '+' : '−') + f(Math.abs(x)) + '억';
+        const isC = (rep && rep.is && rep.is[lc.derived ? 'prev' : 'cur']) || {};
+        const qv = (k) => lc.quarter ? (rep.is[lc.derived ? 'prevQ' : 'curQ'][k] || {}).v : (isC[k] || {}).v;
         const parts = [];
-        if (L.fin_inc !== undefined) parts.push(`금융수익 ${f(L.fin_inc)}억`);
-        if (L.fin_cost !== undefined) parts.push(`금융비용 ${f(L.fin_cost)}억`);
-        if (L.oth_inc !== undefined) parts.push(`기타수익 ${f(L.oth_inc)}억`);
-        if (L.oth_exp !== undefined) parts.push(`기타비용 ${f(L.oth_exp)}억`);
-        out.push({ tone: 'warn', title: '순이익과 영업이익이 크게 다릅니다', body: `영업이익 ${f(L.op)}억, 순이익 ${f(L.ni)}억으로 ${f(Math.abs(gap))}억 차이가 납니다. ${parts.join(', ')}. 본업 밖의 손익(자산 처분, 파생상품 평가 등)은 반복되지 않을 수 있으니, 주석의 '금융수익 및 금융비용', '기타수익 및 기타비용'에서 무엇인지 확인하세요.` });
+        let acc = L.op;
+        if (L.fin_inc !== undefined || L.fin_cost !== undefined) { const x = (L.fin_inc || 0) - (L.fin_cost || 0); acc += x; parts.push(`금융손익 ${sg(x)}(금융수익 ${f(L.fin_inc || 0)}억 − 금융비용 ${f(L.fin_cost || 0)}억)`); }
+        if (L.oth_inc !== undefined || L.oth_exp !== undefined) { const x = (L.oth_inc || 0) - (L.oth_exp || 0); acc += x; parts.push(`기타손익 ${sg(x)}(기타수익 ${f(L.oth_inc || 0)}억 − 기타비용 ${f(L.oth_exp || 0)}억)`); }
+        const eq = qv('eq_inc'); if (eq) { acc += eq; parts.push(`지분법손익 ${sg(eq)}`); }
+        const tax = qv('tax'); if (tax !== undefined && tax !== null) { acc -= tax; parts.push(`법인세 ${sg(-tax)}`); }
+        const resid = L.ni - acc;
+        if (Math.abs(resid) >= 1) parts.push(`그 밖의 차이 ${sg(resid)}(중단영업손익 등)`);
+        let body = `영업이익 ${f(L.op)}억에서 순이익 ${f(L.ni)}억까지: ${parts.join(', ')}.`;
+        const ni2 = rep && rep.noteItems;
+        const useNotes = ni2 && !lc.derived && !(lc.quarter && rep.meta.end && rep.meta.end.m !== 3);
+        if (useNotes) {
+          const all = [...(ni2.fin || []), ...(ni2.oth || [])].sort((a, b) => b.v - a.v);
+          const big = all.filter(x => x.v >= Math.max(5, Math.abs(gap) * 0.15)).slice(0, 4);
+          if (big.length) {
+            body += ` 주석에서 찾은 큰 항목: ${big.map(x => `${x.name} ${x.kind === 'cost' ? '−' : '+'}${f(x.v)}억`).join(', ')}.`;
+            const once = big.filter(x => /처분이익|처분손실|손상|합병|평가이익|평가손실|사채상환|재해|중단/.test(x.name));
+            if (once.length) { const last = once[once.length - 1].name; body += ` 이 중 ${once.map(x => x.name).join(', ')}${josa(last, '은', '는')} 해마다 반복되기 어려운 일회성 성격의 항목입니다.`; }
+            if (big.some(x => /^이자수익/.test(x.name))) body += ' 이자수익은 보유 현금에서 나오는 수익이라 현금이 유지되는 한 반복됩니다.';
+          }
+        } else {
+          body += ' 본업 밖의 손익은 반복되지 않을 수 있으니 주석의 \'금융수익 및 금융비용\', \'기타수익 및 기타비용\'에서 무엇인지 확인하세요.';
+        }
+        out.push({ tone: 'warn', step: 2, key: true, title: '순이익과 영업이익이 크게 다릅니다', short: pnL ? pnL.short : null, body: (pnL ? pnL.short + pnL.extra + ' ' : '') + body });
       }
     }
     // 2) 큰 금융손익
@@ -572,6 +638,8 @@
     if (L.backlog !== undefined && (L.rev_cum ?? L.rev)) {
       out.push({ tone: 'info', title: '수주잔고는 기준을 확인하세요', body: `수주잔고 ${f(L.backlog)}억은 누적 매출의 ${(L.backlog / (L.rev_cum ?? L.rev)).toFixed(1)}배입니다. 회사마다 수주잔고를 적는 기준(전체/일부 품목, 제출일/기준일)이 다르고, 같은 회사도 보고서마다 바뀔 수 있습니다.` });
     }
+    const MAP = [[/순이익과|금융손익|소수주주|분기별|누적과 분기|적자 기업/, 2], [/현금이 들어오지|현금 유출|매출채권이|재고자산이|선수금/, 3], [/배당|보유 자산을 팔아/, 4], [/주식 수|사채가 남아|전환사채 등이/, 6], [/1년 내 갚을|빚 대부분/, 7], [/수주잔고/, 8]];
+    for (const it of out) if (!it.step) { const m = MAP.find(([re]) => re.test(it.title)); it.step = m ? m[1] : 0; }
     return out;
   }
 
@@ -622,7 +690,7 @@
     out.notes.growth = `${label} ${g >= 0 ? '+' : ''}${g.toFixed(1)}%.` + (g <= 0 ? ' 0 이하라 PEG는 계산되지 않습니다.' : '') + ' 한 해 숫자는 출렁일 수 있으니 기대 성장률로 바꿔 넣어도 됩니다.';
   }
 
-  function valuationDefaults(cols, D, mode) {
+  function valuationDefaults(cols, D, mode, fy) {
     const lc = cols[cols.length - 1];
     const rep = lc.rep;
     const L = D[D.length - 1] || {};
@@ -665,8 +733,18 @@
     out.ttm_ebitda = (out.ttm_op !== null && daCur !== null) ? out.ttm_op + daCur * factor : null;
     out.notes.ttm_ebitda = `최근 12개월 영업이익 + 올해 누적 상각비 × ${factor} (상각비는 단순 연환산 추정)`;
     out.ttm_fcf = L.fcf !== undefined ? L.fcf * factor : null;
-    out.notes.ttm_fcf = `누적 FCF × ${+factor.toFixed(2)} (단순 연환산 추정${m <= 3 ? '. 1분기 숫자를 4배 한 값이라 출렁임이 매우 큽니다' : ''}. 사업보고서의 연간 FCF로 바꿔 넣으면 정확해집니다)`;
-    out.notes.ttm_ebitda = `12개월 영업이익 + 누적 상각비 × ${+factor.toFixed(2)} (상각비는 단순 연환산 추정)`;
+    out.notes.ttm_fcf = `누적 FCF × ${+factor.toFixed(2)} (단순 연환산 추정${m <= 3 ? '. 1분기 숫자를 4배 한 값이라 출렁임이 매우 큽니다' : ''}). 사업보고서 탭에 ${rep.meta.end ? rep.meta.end.y - 1 : '직전'}년 사업보고서를 넣으면 실제 12개월 숫자로 바뀝니다`;
+    out.notes.ttm_ebitda = `12개월 영업이익 + 누적 상각비 × ${+factor.toFixed(2)} (상각비는 단순 연환산 추정). 사업보고서 탭에 직전 연도 사업보고서를 넣으면 실제 숫자로 바뀝니다`;
+    // 사업보고서 탭에 직전 사업연도 보고서가 있으면 12개월 FCF·EBITDA를 실제 숫자로 계산합니다.
+    if (fy && fy.cf && fy.cf.cur && rep.cf && rep.cf.cur && rep.cf.prev) {
+      const fcfOf = (c) => (c.ocf ? c.ocf.v : NaN) - ((c.capex_ppe ? c.capex_ppe.v : 0) + (c.capex_int ? c.capex_int.v : 0));
+      const v = fcfOf(fy.cf.cur) - fcfOf(rep.cf.prev) + fcfOf(rep.cf.cur);
+      if (Number.isFinite(v)) { out.ttm_fcf = v; out.notes.ttm_fcf = `${fy.meta.end.y}년 연간 FCF − 전년 같은 기간 누적 + 올해 누적 (사업보고서 탭의 ${fy.meta.end.y}년 사업보고서 사용)`; }
+      if (fy.da && fy.da.cur && rep.da && rep.da.cur && rep.da.prev && out.ttm_op !== null) {
+        out.ttm_ebitda = out.ttm_op + fy.da.cur.v - rep.da.prev.v + rep.da.cur.v;
+        out.notes.ttm_ebitda = `12개월 영업이익 + 12개월 상각비(${fy.meta.end.y}년 연간 − 전년 같은 기간 + 올해, 사업보고서 탭의 보고서 사용)`;
+      }
+    }
     // PEG용 성장률 = 지배주주 순이익의 전년 대비(같은 기간) 증가율
     setGrowth(out, prevIS.ni_ctrl ? prevIS.ni_ctrl.v : undefined, curIS.ni_ctrl ? curIS.ni_ctrl.v : undefined,
       `${rep.meta.type === '반기보고서' ? '상반기' : '연초 이후 누적'} 지배주주 순이익 전년 대비 증가율(${rep.meta.end ? rep.meta.end.y - 1 : '전년'} → ${rep.meta.end ? rep.meta.end.y : '올해'}, 같은 기간끼리)`);

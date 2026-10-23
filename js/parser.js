@@ -219,6 +219,8 @@
       else if (L.startsWith('기타수익') || L.startsWith('기타영업외수익')) put('oth_inc');
       else if (L.startsWith('기타비용') || L.startsWith('기타영업외비용')) put('oth_exp');
       else if (/^법인세(비용)?차감전/.test(L)) put('pbt');
+      else if (/^법인세(비용|수익)/.test(L)) put('tax');
+      else if (/지분법(이익|손실|손익)|관계기업.*(이익|손실|손익)/.test(L) && !L.includes('기타포괄')) put('eq_inc');
       else if (!cur.ni && /^(연결)?(총)?(당기|반기|분기)?(연결)?(총)?(순이익|순손실|당기순이익|당기순손실)/.test(L) && !L.includes('귀속') && !L.includes('주당')) { put('ni'); afterNi = true; }
       else if (niAttr && !cur.ni_ctrl && /지배(기업|회사)|지배주주/.test(L) && !L.includes('비지배')) put('ni_ctrl');
       else if (niAttr && !cur.nci && L.startsWith('비지배')) put('nci');
@@ -739,6 +741,54 @@
     return { cur: blocks[0], prev: blocks[1] || null, src: '주석의 영업부문 정보' };
   }
 
+  // ---------- 주석: 금융수익·비용, 기타수익·비용의 세부 항목 ----------
+  function parseNoteItems(lines) {
+    const grab = (headRe) => {
+      for (let i = 0; i < lines.length; i++) {
+        const n = norm(lines[i]);
+        if (/\.{5,}/.test(lines[i]) || !headRe.test(n) || n.length > 30) continue;
+        if (!/단위/.test(lines.slice(i, i + 8).join(' '))) continue;
+        const head = lines.slice(i, i + 10).join(' ');
+        const cumIdx = /3개월/.test(head) && /누적/.test(head) ? 1 : 0;
+        const unit = findUnit(lines, i, 8) || 1e-8;
+        const out = [];
+        let totals = 0, section = null, phase = 'cur';
+        const secOf = (t) => /^(금융비용|금융원가|기타비용|기타영업외비용)/.test(t) ? 'cost' : /^(금융수익|기타수익|기타영업외수익)/.test(t) ? 'income' : null;
+        for (let j = i + 1; j < Math.min(lines.length, i + 70); j++) {
+          if (isPageNoise(lines[j])) continue;
+          const nj = norm(lines[j]);
+          const sec = secOf(nj); if (sec) section = sec;
+          if (j > i + 3 && /^\d+\.\S/.test(nj) && !splitRow(lines[j]).nums.length) break;
+          if (/^(전기|전반기|전분기)(\(|$)|^전기\(?단위|^전반기\(?단위/.test(nj) && out.length) { if (phase === 'prev') break; phase = 'prev'; section = null; totals = 0; continue; }
+          const r = splitRow(lines[j]);
+          if (!r.nums.length) continue;
+          const L = clean(norm(r.label));
+          if (!L) continue;
+          if (/^(합계|소계|계|금융수익|금융비용|금융원가|기타수익|기타비용|기타영업외수익|기타영업외비용)$/.test(L.replace(/\(.*\)$/, ''))) { totals++; if (totals >= 4) break; continue; }
+          const v = r.nums[Math.min(cumIdx, r.nums.length - 1)] * unit;
+          const pIdx = cumIdx === 1 ? 3 : 1;
+          const pv = r.nums.length > pIdx ? Math.abs(r.nums[pIdx] * unit) : undefined;
+          if (!v && !pv) continue;
+          if (/합계|소계/.test(L)) continue;
+          const name = r.label.replace(/\((금융수익|금융원가|금융비용)\)/, '').replace(/^(금융수익|금융비용|금융원가|기타수익|기타비용|기타영업외수익|기타영업외비용)\s*:?\s*/, '').replace(/\s+/g, ' ').trim();
+          const cost = section ? section === 'cost' : (/손실|비용|원가|손상|기부금|수수료|차손/.test(L) && !/이익$|수익$|차익$/.test(L));
+          if (phase === 'prev') {
+            // 당기·전기가 따로 있는 표: 같은 이름 항목에 전기 숫자를 붙임
+            const hit = out.find(x => x.name === name && x.kind === (cost ? 'cost' : 'income'));
+            if (hit) hit.pv = Math.abs(v); else out.push({ name, v: 0, pv: Math.abs(v), kind: cost ? 'cost' : 'income' });
+            continue;
+          }
+          out.push({ name, v: Math.abs(v), pv, kind: cost ? 'cost' : 'income' });
+        }
+        if (out.length) return out;
+      }
+      return null;
+    };
+    const fin = grab(/금융수익(및|과)금융(비용|원가)/);
+    const oth = grab(/기타(영업외)?수익(및|과)기타(영업외)?비용/);
+    return (fin || oth) ? { fin, oth } : null;
+  }
+
   function parseReport(lines) {
     const meta = parseMeta(lines);
     meta.ticker = parseTicker(lines);
@@ -759,6 +809,7 @@
       researchers: parseResearchers(lines),
       patents: parsePatents(lines),
       segments: parseSegments(lines),
+      noteItems: parseNoteItems(lines),
       overview: parseOverview(lines)
     };
   }
